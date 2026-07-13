@@ -31,7 +31,7 @@ from .orchestrator import Orchestrator
 def _parse_args(argv: list[str]) -> tuple[str, list[str], dict[str, str]]:
     """Parse command line arguments."""
     if not argv:
-        return "help", [], {}
+        return "home", [], {}
 
     command = argv[0]
     positional: list[str] = []
@@ -774,6 +774,23 @@ async def cmd_commentary(positional: list[str], flags: dict[str, str]) -> None:
 
 
 
+# ============================================================================
+# DASHBOARD + REVIEW commands (simplified UX)
+# ============================================================================
+
+async def cmd_home(positional: list[str], flags: dict[str, str]) -> None:
+    """Default dashboard: what's happening and what to do next."""
+    from .dashboard import render_dashboard
+    print(await render_dashboard())
+
+
+async def cmd_review(positional: list[str], flags: dict[str, str]) -> None:
+    """Guided review of pending check-ins, one at a time."""
+    from .dashboard import render_review
+    print(await render_review())
+
+
+
 COMMANDS = {
     "add": cmd_add,
     "list": cmd_list,
@@ -790,75 +807,64 @@ COMMANDS = {
     "checkin": cmd_checkin,
     "upgrade": cmd_upgrade,
     "commentary": cmd_commentary,
+    "review": cmd_review,
+    "home": cmd_home,
 }
+
+
+
+def _help_text() -> str:
+    return """
+  Job-Star — constrained, supervised, goal-oriented AI orchestration
+
+  MOST USED:
+    (no command)            Dashboard — what's happening and what to do next
+    review                  Guided review of pending check-ins
+    commentary [--brief]    AI summary of the system
+    add "title"             Add a new goal
+    list                    See all goals
+
+  GOALS:
+    add "title" [--desc ".."] [--urgency soon] [--domain coding]
+    list [--status active] [--urgency soon]
+    show <id>               Details + steps
+    work <id>               Start/continue work on a goal
+    complete <id>           Mark a goal done
+
+  CHECK-INS:
+    checkin pending         What needs your response
+    checkin show <id>       See a check-in
+    checkin respond <id> --answer "1" --feedback "text"
+    (or open the web link from your email/chat notification)
+
+  SYSTEM:
+    status                  System health + model tiers
+    digest [N]              Recent activity log
+    upgrade [--check]       Safe deploy (blue-green)
+    panel                   Live terminal dashboard
+    worker                  Run a worker process
+    experts                 List expert agents
+
+  URGENCY:  imperative | soon | idle-opportunistic | timed
+  DOMAIN:   coding | personal | infra | meta
+"""
 
 
 def main():
     command, positional, flags = _parse_args(sys.argv[1:])
 
-    if command == "help" or command not in COMMANDS:
-        print("""
-  Job-Star v0.1.0 — Constrained, supervised, goal-oriented AI orchestration
+    # No command -> show the dashboard
+    if not command or command == "home":
+        asyncio.run(cmd_home(positional, flags))
+        return
 
-  USAGE:
-    python -m job_star <command> [args] [flags]
+    if command == "help":
+        print(_help_text())
+        return
 
-  COMMANDS:
-    add "title"              Add a goal through the full intake pipeline
-      --urgency <u>            imperative | soon | idle-opportunistic | timed
-      --domain <d>             coding | personal | infra | meta
-      --desc "description"
-
-    list [--status <s>]      List all goals
-         [--domain <d>]
-         [--urgency <u>]
-
-    show <id>                Show goal details and steps
-
-    work <id>                Auto-plan + execute next step
-      --model <model>         Override model selection
-
-    complete <id>            Mark a goal as completed
-
-    digest [N]               Show last N audit events (default: 20)
-
-    conflicts                Run conflict detection across all goals
-
-    status                   Show system status
-
-    idle [--cycles N]        Run N idle loop cycles (default: 1)
-         [--interval S]       Sleep S seconds between cycles (default: 60)
-
-    worker [--urgency <u>]   Distributed worker: continuously claim & execute steps
-           [--domain <d>]      from the shared queue. Other machines run this to
-           [--interval S]      contribute spare cycles. (default: run forever)
-           [--cycles N]
-           [--model <m>]
-
-    panel                   Live console dashboard (goals, workers, events, queue)
-      [--interval S]       Refresh seconds (default 5)
-
-    checkin list [--goal <id>]  List check-ins (structured progress dialogue)
-              [--status pending]
-    checkin show <id>           Show a check-in with questions and your response
-    checkin pending           Show all check-ins awaiting your response
-    checkin create <goal-id>   Create a check-in for a goal
-              [--type progress|clarification|milestone|completion]
-    checkin respond <id>       Respond to a check-in
-              [--answer qid=value]  Answer a specific question
-              [--feedback "text"]  Free-text feedback
-
-    commentary [--brief]      AI-generated summary of what job-star is doing\n\n    upgrade [--check]        Safe upgrade: pre-flight → drain → reap → migrate → restart
-            [--reap]           Reap orphaned steps only
-            [--commit]         Commit code before upgrading
-
-  ENVIRONMENT:
-    GATEHOUSE_API_URL          Gatehouse-AI endpoint
-    JOB_STAR_MODEL              Default model override
-    DATABASE_URL                Postgres connection string
-
-  The loop begins. 🦞
-""")
+    if command not in COMMANDS:
+        print(f"  Unknown command: {command}\n")
+        print(_help_text())
         return
 
     handler = COMMANDS[command]
