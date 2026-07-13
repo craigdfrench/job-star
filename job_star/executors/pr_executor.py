@@ -137,74 +137,52 @@ class PRExecutor(DefaultExecutor):
         return result.returncode, result.stdout, result.stderr
 
     def _ensure_branch(self, repo_path: str, branch: str) -> tuple[bool, str]:
-        """Create an isolated git worktree for the branch.
+        """Create an isolated checkout for the branch.
 
-        Uses `git worktree add` to create a separate working directory instead
-        of `git checkout` on the user's primary working tree. This prevents
-        clobbering uncommitted changes in the user's checkout.
+        Uses a `git clone` of the repo path into a temp directory, then checks
+        out the requested branch from the origin. This is more robust than
+        `git worktree add` because the resulting directory is a normal git repo
+        with its own .git directory, and it doesn't leave stale worktree
+        metadata behind.
 
         Returns (ok, message). On success, sets self._active_worktree to the
-        worktree path.
+        checkout path.
         """
+        import shutil
+
         os.makedirs(self.worktree_dir, exist_ok=True)
         worktree_path = os.path.join(self.worktree_dir, branch.replace("/", "_"))
 
-        def _is_valid_worktree(path: str) -> bool:
-            if not os.path.isdir(path):
-                return False
-            git_file = os.path.join(path, ".git")
-            if not os.path.isfile(git_file):
-                return False
-            # Check gitdir points to a real metadata dir
-            gitdir = None
-            try:
-                with open(git_file) as f:
-                    gitdir = f.read().strip().replace("gitdir: ", "")
-            except Exception:
-                return False
-            return gitdir and os.path.isdir(gitdir)
-
-        # Validate any existing directory: it must be a real git worktree.
-        if os.path.exists(worktree_path) and not _is_valid_worktree(worktree_path):
-            # Corrupt or stale directory — remove it and recreate.
-            import shutil
+        # Always use a fresh clone. Cloning is fast over the local filesystem and
+        # avoids the fragility of git worktree metadata (which can lose the .git
+        # pointer if the worktree directory is removed outside git).
+        if os.path.exists(worktree_path):
             shutil.rmtree(worktree_path)
 
-        if os.path.exists(worktree_path):
-            # Reuse existing worktree — make sure branch exists and switch.
-            code, _, err = self._git(["fetch", "origin"], repo_path)
-            code, out, err2 = self._git(["checkout", branch], worktree_path)
-            if code != 0:
-                # Branch may not exist locally yet — create it from base
-                code, _, err = self._git(
-                    ["checkout", "-b", branch, f"origin/{self.base_branch}"],
-                    worktree_path,
-                )
-                if code != 0:
-                    return False, f"failed to create branch in worktree: {err} / {err2}"
-            self._active_worktree = worktree_path
-            return True, f"reusing worktree {worktree_path}"
-
-        # Create new worktree with a new branch from base
-        code, out, err = self._git(
-            ["worktree", "add", "-b", branch, worktree_path, self.base_branch],
+        # Clone the repo into the worktree path
+        code, _, err = self._git(
+            ["clone", "-b", self.base_branch, "--single-branch", repo_path, worktree_path],
             repo_path,
         )
         if code != 0:
-            # Branch may already exist — try without -b
-            code, out, err = self._git(
-                ["worktree", "add", worktree_path, branch],
-                repo_path,
-            )
-            if code != 0:
-                return False, f"failed to create worktree: {err}"
+            return False, f"failed to clone repo: {err}"
 
-        # Validate the worktree was created with a .git pointer
-        if not _is_valid_worktree(worktree_path):
-            return False, f"worktree created at {worktree_path} but .git pointer is missing or invalid"
+        # Ensure it's a valid git repo
+        git_dir = os.path.join(worktree_path, ".git")
+        if not os.path.isdir(git_dir):
+            return False, f"clone created at {worktree_path} but .git directory is missing"
+
+        # Create or switch the target branch
+        # Check if the branch exists in the upstream (origin) or locally
+        code, out, _ = self._git(["branch", "-a"], worktree_path)
+        branch_exists = f"origin/{branch}" in out or f"{branch}\n" in out
+
+        code, out, err = self._git(["checkout", "-B", branch, f"origin/{self.base_branch}"], worktree_path)
+        if code != 0:
+            return False, f"failed to create branch in checkout: {err}"
 
         self._active_worktree = worktree_path
-        return True, f"created worktree {worktree_path}"
+        return True, f"created checkout {worktree_path}"
 
     def _cleanup_worktree(self, repo_path: str) -> None:
         """Remove the active worktree after execution."""
