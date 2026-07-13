@@ -21,6 +21,7 @@ async def intake(
     domain_override: Domain | None = None,
     metadata: dict | None = None,
     check_conflicts: bool = True,
+    requested_by: str = "",
 ) -> tuple[Goal | None, TriageResult]:
     """Process a raw intake request through the full pipeline.
 
@@ -78,6 +79,7 @@ async def intake(
         urgency=result.urgency,
         source=source,
         expert=result.expert,
+        requested_by=requested_by,
         metadata={
             **(metadata or {}),
             "triage": {

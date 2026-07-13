@@ -35,6 +35,7 @@ class TokenResponse(BaseModel):
 class UserIdentity(BaseModel):
     user_id: str
     role: str = "agent"
+    email: str = ""
 
 
 # ============================================================================
@@ -47,6 +48,7 @@ class IntakeRequest(BaseModel):
     urgency: Urgency = Urgency.SOON
     source: str = "api"
     metadata: dict = Field(default_factory=dict)
+    requested_by: str = ""
 
 
 class GoalSummary(BaseModel):

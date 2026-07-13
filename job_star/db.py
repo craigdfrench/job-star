@@ -95,12 +95,13 @@ async def create_goal(
     parent_id: str | None = None,
     metadata: dict | None = None,
     expert: str | None = None,
+    requested_by: str | None = None,
 ) -> Goal:
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """INSERT INTO goals (title, description, domain, urgency, source, metadata, parent_id, expert)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            """INSERT INTO goals (title, description, domain, urgency, source, metadata, parent_id, expert, requested_by)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                RETURNING *""",
             title,
             description,
@@ -110,8 +111,9 @@ async def create_goal(
             json.dumps(metadata or {}),
             parent_id,
             expert,
+            requested_by,
         )
-    await audit("goal_created", {"title": title, "domain": domain.value, "urgency": urgency.value, "expert": expert}, row["id"])
+    await audit("goal_created", {"title": title, "domain": domain.value, "urgency": urgency.value, "expert": expert, "requested_by": requested_by}, row["id"])
     return Goal.from_row(dict(row))
 
 

@@ -37,6 +37,10 @@ CREATE TABLE goals (
 
     -- Expert agent that owns this goal (NULL = generic pool)
     expert TEXT,
+
+    -- Who requested this goal (for multi-user/family instances)
+    requested_by TEXT,
+        -- e.g. "craig@thefrenches.ca" or "sarah"
         -- e.g. 'gatehouse-ai' — only workers with matching affinity can claim
 
     -- Flexible metadata

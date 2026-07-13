@@ -109,6 +109,9 @@ async def send_check_in_notification(check_in_id: str) -> bool:
                     body_lines.append(f"     {j}) {opt}")
         body_lines.append("")
 
+    if goal and goal.requested_by:
+        body_lines.append(f"Requested by: {goal.requested_by}")
+        body_lines.append("")
     body_lines.append("─" * 50)
     body_lines.append("")
     body_lines.append("Discuss and respond in your browser:")
@@ -119,8 +122,10 @@ async def send_check_in_notification(check_in_id: str) -> bool:
 
     # Build the email
     msg = EmailMessage()
+    # Route to the requester if known, otherwise the global default
+    notify_to = (goal.requested_by if goal and goal.requested_by and "@" in goal.requested_by else NOTIFY_TO)
     msg["From"] = formataddr(("Job-Star", NOTIFY_FROM))
-    msg["To"] = NOTIFY_TO
+    msg["To"] = notify_to
     msg["Subject"] = f"{icon} {subject_prefix}: {goal_title}"
     msg.set_content(body)
 

@@ -85,6 +85,7 @@ async def intake(
     user=Depends(get_current_user),
 ):
     """Create a new goal from an intake request."""
+    requested_by = req.requested_by or user.email
     goal = await create_goal(
         title=req.title,
         description=req.description,
@@ -92,6 +93,7 @@ async def intake(
         urgency=req.urgency,
         source=req.source,
         metadata=req.metadata,
+        requested_by=requested_by,
     )
     await publish("goal.created", {"goal_id": goal.id, "title": goal.title})
     return _goal_to_summary(goal)

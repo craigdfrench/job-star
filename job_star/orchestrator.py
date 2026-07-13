@@ -63,6 +63,7 @@ class Orchestrator:
         urgency_override: Urgency | None = None,
         domain_override: Domain | None = None,
         metadata: dict | None = None,
+        requested_by: str = "",
     ) -> tuple[Goal | None, TriageResult]:
         """Add a goal through the full intake pipeline."""
         return await do_intake(
@@ -72,6 +73,7 @@ class Orchestrator:
             urgency_override=urgency_override,
             domain_override=domain_override,
             metadata=metadata,
+            requested_by=requested_by,
         )
 
     # ===================================================================

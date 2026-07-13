@@ -106,6 +106,7 @@ class Goal:
     deadline: Optional[datetime] = None
     source: str = "intake"
     expert: Optional[str] = None  # expert agent that owns this goal (NULL = generic)
+    requested_by: Optional[str] = None  # who requested this goal (for multi-user/family)
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -126,6 +127,7 @@ class Goal:
             deadline=row.get("deadline"),
             source=row.get("source", "intake"),
             expert=row.get("expert"),
+            requested_by=row.get("requested_by"),
             metadata=_parse_jsonb(row.get("metadata", {})) or {},
             created_at=row.get("created_at"),
             updated_at=row.get("updated_at"),

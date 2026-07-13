@@ -61,15 +61,16 @@ def _parse_args(argv: list[str]) -> tuple[str, list[str], dict[str, str]]:
 async def cmd_add(positional: list[str], flags: dict[str, str]) -> None:
     title = positional[0] if positional else ""
     if not title:
-        print('Usage: job_star add "title" [--urgency soon] [--domain coding] [--desc "..."]')
+        print('Usage: job_star add "title" [--urgency soon] [--domain coding] [--desc "..."] [--requested-by email]')
         return
 
     desc = flags.get("desc", "")
     urgency = Urgency(flags.get("urgency", "soon")) if "urgency" in flags else None
     domain = Domain(flags.get("domain", "coding")) if "domain" in flags else None
+    requested_by = flags.get("requested-by", "")
 
     orch = Orchestrator()
-    goal, triage = await orch.add_goal(title, desc, urgency_override=urgency, domain_override=domain)
+    goal, triage = await orch.add_goal(title, desc, urgency_override=urgency, domain_override=domain, requested_by=requested_by)
 
     print(f"  Triage: {triage.rationale}")
     print()

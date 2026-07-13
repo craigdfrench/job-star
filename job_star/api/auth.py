@@ -49,6 +49,41 @@ def _get_env_creds():
     }
 
 
+
+
+def _tailscale_user_email(client_ip: str) -> str | None:
+    """Look up the Tailscale user email for an IP via `tailscale whois`.
+
+    The server is tagged, so Caddy's tailscale_auth plugin cannot authenticate
+    clients. Instead, the backend queries the local Tailscale daemon's whois
+    database for the user associated with the CGNAT IP.
+    """
+    import subprocess
+    import re
+
+    # Don't run whois for localhost or obviously non-Tailscale IPs
+    try:
+        ip = ipaddress.ip_address(client_ip)
+        if ip in LOCALHOST_NETS[0] or ip in LOCALHOST_NETS[1]:
+            return None
+    except (ValueError, ipaddress.AddressValueError):
+        return None
+
+    try:
+        result = subprocess.run(
+            ["tailscale", "whois", client_ip],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode != 0:
+            return None
+        match = re.search(r"^User:\s*\n  Name:\s*(\S+)", result.stdout, re.MULTILINE)
+        if match:
+            email = match.group(1)
+            if "@" in email:
+                return email
+    except Exception:
+        pass
+    return None
 async def get_current_user(
     request: Request,
     basic: Optional[HTTPBasicCredentials] = Depends(security_basic),
@@ -66,7 +101,13 @@ async def get_current_user(
     # Tailscale network trust
     client_ip = request.client.host if request.client else ""
     if _is_tailscale_or_localhost(client_ip):
-        return UserIdentity(user_id=f"tailscale:{client_ip}", role="tailscale")
+        # Try to determine the Tailscale user from the client IP via `tailscale whois`.
+        # Caddy tailscale_auth does not work on tagged servers, so we query the local
+        # Tailscale daemon directly.
+        tailscale_user = _tailscale_user_email(client_ip) or ""
+        user_id = tailscale_user or f"tailscale:{client_ip}"
+        email = tailscale_user if "@" in tailscale_user else ""
+        return UserIdentity(user_id=user_id, role="tailscale", email=email)
 
     creds = _get_env_creds()
 
