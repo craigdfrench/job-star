@@ -111,10 +111,13 @@ Secrets: `/etc/job-star-api-secrets.env` (API token + SMTP credentials)
 
 ## Known Issues
 
-1. **Gatehouse-ai Go tests fail**: `costclass_test.go` has struct field changes (`FreeKind`, `Now`, `PromoEndsAt`). PR #5 created with failing tests. Needs human fix or better model.
-2. **5 completion check-ins pending**: goals at 100% waiting for user review. Will auto-accept after 7 days if unanswered.
-3. **3 personal goals at 0%**: human errands (tax, COFA renewal, colo termination) — will never auto-start.
-4. **Flaky test resolved**: `test_step_dag_parallel_steps_no_deps` now passes consistently (10+ runs) thanks to the `clean_db` fixture and step-status-syncing fixes.
+1. **5 completion check-ins pending**: goals at 100% waiting for user review. Will auto-accept after 7 days if unanswered.
+2. **3 personal goals at 0%**: human errands (tax, COFA renewal, colo termination) — will never auto-start.
+
+## Resolved
+
+- **Gatehouse-ai Go tests fixed**: All 37 packages pass (`go test -count=1 ./...`). The struct field changes in `costclass_test.go` and build failures have been resolved. The failed "Review routing intelligence" step has been reset to pending and will be retried by the gatehouse-ai worker.
+- **Flaky test resolved**: `test_step_dag_parallel_steps_no_deps` now passes consistently.
 
 ## Daily Workflow
 
