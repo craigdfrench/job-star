@@ -2,7 +2,7 @@
 
 **Date:** July 13, 2026
 **Target model:** GLM-5.2 (200k context)
-**Latest commit:** `ef0c608` — Add system integrity monitor + worker heartbeat fix
+**Latest commit:** `11f2922` — Make PR executor fail steps when tests don't pass
 
 ---
 
@@ -20,30 +20,29 @@ Core philosophy: **constrained, supervised, goal-oriented AI with situational aw
 
 ```
 Job-Star
-Monday, July 13 — 16:12
+Monday, July 13 — 16:36
 
-[!] 1 check-in(s) need your response:
-    ✅ 9f13507d  Fix the cog-proxy /v4/ routing bug in gatehouse-ai
+[✓] Nothing needs your attention right now.
 
 [~] Workers idle — no steps in progress
 
-[=] 10 active goals, 29 pending steps
+[=] 8 active goals, 40 pending steps
     Goals that need starting:
-      • Review and commit gatehouse-ai routing/quota/catal
-      • Monitor Home Assistant event bus for anomalies in
       • Fix machine name mapping for old Pi session index
+      • Monitor Home Assistant event bus for anomalies in
+      • Follow up on Devin billing issue ticket #61488
     Run: job_star work <id>    (start a goal)
 
-[✓] 320 steps today, $0 cost, 4 workers, gateway up
+[✓] 341 steps today, $0 cost, 4 workers, gateway up
 ```
 
 ### 2.2 Database counts
 
 | Table | Counts |
 |-------|--------|
-| goals | active: 10, completed: 39, abandoned: 19 |
-| goal_steps | pending: 29, completed: 530, blocked: 1 |
-| check_ins | sent: 1, actioned: 1, expired: 4 |
+| goals | active: 8, completed: 39, abandoned: 21 |
+| goal_steps | pending: 40, completed: 541, blocked: 1 |
+| check_ins | actioned: 2, expired: 10 |
 
 ### 2.3 Services
 
@@ -105,6 +104,15 @@ Step completed → trigger check-in if needed
 3. **Upgrade Tool** (`job_star/upgrade.py`) — safe deploys with blue-green restart and auto-rollback.
 
 ---
+
+## 3.5 Latest fixes (since earlier handoff)
+
+| # | Fix | Why |
+|---|-----|-----|
+| 1 | **Notification pool race** (`notify.py`) | Fire-and-forget notification tasks were trying to acquire from a closed pool. |
+| 2 | **Clarification check-in throttle** (`checkin/engine.py`, `orchestrator.py`) | `>=2` failed steps created unlimited clarification check-ins; now 1 per 24h per goal. |
+| 3 | **PR executor: fail on test failure** (`executors/pr_executor.py`) | Was returning `success=True` after creating PR with failing tests, causing fake completion check-ins. |
+| 4 | **Cog-proxy check-in rejected** | Responded "Needs revision" because the PR still has failing build tests. |
 
 ## 4. What Changed This Session
 
