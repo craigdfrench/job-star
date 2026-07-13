@@ -56,6 +56,12 @@ async def send_check_in_notification(check_in_id: str) -> bool:
 
     Returns True on success, False on failure.
     """
+    # Must get a fresh pool before fetching. The caller may have already
+    # closed the pool (e.g. CLI command is exiting), so we create a
+    # short-lived connection just for this notification.
+    from .db import get_pool
+    pool = await get_pool()
+
     check_in = await get_check_in(check_in_id)
     if not check_in:
         log.error(f"Check-in not found: {check_in_id}")
