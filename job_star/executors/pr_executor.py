@@ -415,13 +415,17 @@ Generate the changes now."""
             # Parse file changes from AI output
             changes = parse_file_blocks(result.content) + parse_delete_blocks(result.content)
             if not changes:
-                # No file changes — maybe it's a docs/analysis step. Store as text.
+                # No file changes parsed. If the step explicitly asked for
+                # docs/analysis, the prompt should not have been routed through
+                # the PR executor. Fail so the orchestrator can retry or surface
+                # a clarification check-in to the user.
                 return ExecutionResult(
                     content=result.content,
                     model=result.model,
                     input_tokens=result.input_tokens,
                     output_tokens=result.output_tokens,
-                    success=True,
+                    success=False,
+                    error="No file changes were generated. The model output did not contain any '## File:' blocks. Output sample:\n" + result.content[:500],
                     x_gatehouse=result.x_gatehouse,
                 )
 
