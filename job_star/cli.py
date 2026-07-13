@@ -482,6 +482,278 @@ async def cmd_experts(positional: list[str], flags: dict[str, str]) -> None:
     await close_pool()
 
 
+# ============================================================================
+# CHECK-IN commands
+# ============================================================================
+
+async def cmd_checkin(positional: list[str], flags: dict[str, str]) -> None:
+    """Manage check-ins: structured progress dialogue.
+
+    Usage:
+      job_star checkin list [--goal <id>] [--status pending]
+      job_star checkin show <checkin-id>
+      job_star checkin respond <checkin-id> [--answer q1="A" --answer q2="B"] [--feedback "text"]
+      job_star checkin create <goal-id> [--type progress|clarification|milestone|completion]
+    """
+    from .checkin import (
+        CheckInType, CheckInStatus, list_check_ins, get_check_in,
+        respond_to_check_in, create_check_in, get_pending_check_ins,
+    )
+    from .checkin.engine import CheckInEngine
+    from .db import get_goal, get_steps
+
+    subcommand = positional[0] if positional else "list"
+    args = positional[1:]
+
+    if subcommand == "list":
+        goal_id = flags.get("goal")
+        status_filter = CheckInStatus(flags["status"]) if "status" in flags else None
+
+        # Resolve goal ID if partial
+        if goal_id:
+            goal = await _resolve_goal(goal_id)
+            goal_id = goal.id if goal else goal_id
+
+        check_ins = await list_check_ins(goal_id=goal_id, status=status_filter)
+
+        if not check_ins:
+            print("  No check-ins found.")
+            await close_pool()
+            return
+
+        print(f"\n  {'─' * 70}")
+        print(f"  CHECK-INS ({len(check_ins)})")
+        print(f"  {'─' * 70}")
+
+        for ci in check_ins:
+            type_icon = {
+                CheckInType.PROGRESS: "📊",
+                CheckInType.CLARIFICATION: "❓",
+                CheckInType.MILESTONE: "🏁",
+                CheckInType.COMPLETION: "✅",
+            }.get(ci.type, "📋")
+
+            status_str = ci.status.value
+            if ci.is_pending:
+                status_str = "⏳ awaiting response"
+
+            q_count = len(ci.questions)
+            q_str = f"{q_count} question{'s' if q_count != 1 else ''}" if q_count else "no questions"
+
+            print(f"  {type_icon} {ci.id[:8]}  [{status_str}]  {ci.type.value}  ({q_str})")
+            if ci.progress_summary:
+                print(f"           {ci.progress_summary[:80]}...")
+
+        print(f"\n  Show details:  job_star checkin show <id>")
+        print(f"  Respond:       job_star checkin respond <id> --feedback '...'\n")
+
+    elif subcommand == "show":
+        ci_id = args[0] if args else ""
+        if not ci_id:
+            print("Usage: job_star checkin show <checkin-id>")
+            await close_pool()
+            return
+
+        # Resolve partial UUID
+        all_cis = await list_check_ins(limit=200)
+        matches = [c for c in all_cis if c.id.startswith(ci_id)]
+        if len(matches) == 0:
+            print(f"Check-in not found: {ci_id}")
+            await close_pool()
+            return
+        ci = matches[0]
+
+        goal = await get_goal(ci.goal_id)
+        goal_title = goal.title if goal else ci.goal_id[:8]
+        print(ci.format(goal_title))
+
+        if ci.is_pending:
+            print(f"  Respond:  job_star checkin respond {ci.id[:8]} --feedback 'your response'")
+            print()
+
+    elif subcommand == "respond":
+        ci_id = args[0] if args else ""
+        if not ci_id:
+            print("Usage: job_star checkin respond <checkin-id> [--answer qid=val] [--feedback 'text']")
+            await close_pool()
+            return
+
+        # Resolve partial UUID
+        all_cis = await list_check_ins(limit=200)
+        matches = [c for c in all_cis if c.id.startswith(ci_id)]
+        if len(matches) == 0:
+            print(f"Check-in not found: {ci_id}")
+            await close_pool()
+            return
+        ci = matches[0]
+
+        if not ci.is_pending:
+            print(f"  This check-in is {ci.status.value} (not awaiting response).")
+            await close_pool()
+            return
+
+        # Parse answers from --answer flags (format: --answer q1=choice A)
+        # Multiple --answer flags are supported
+        decisions = []
+        feedback = flags.get("feedback", "")
+
+        # The _parse_args stores repeated --answer as the last one wins.
+        # For multiple answers, we need to parse sys.argv directly.
+        import sys as _sys
+        raw_answers = []
+        i = 0
+        argv = _sys.argv
+        while i < len(argv):
+            if argv[i] == "--answer" and i + 1 < len(argv):
+                raw_answers.append(argv[i + 1])
+                i += 2
+            else:
+                i += 1
+
+        for raw in raw_answers:
+            if "=" in raw:
+                qid, answer = raw.split("=", 1)
+                # Match question ID (partial match)
+                for q in ci.questions:
+                    if q.id.startswith(qid) or qid == q.id:
+                        # If answer is a number and question has options, map it
+                        if answer.strip().isdigit() and q.options:
+                            idx_num = int(answer.strip()) - 1
+                            if 0 <= idx_num < len(q.options):
+                                answer = q.options[idx_num]
+                        decisions.append({"question_id": q.id, "answer": answer.strip()})
+                        break
+            elif ci.questions:
+                # No qid= prefix — if there's only one question, assign to it
+                answer = raw.strip()
+                q = ci.questions[0]
+                # If answer is a number and question has options, map it
+                if answer.isdigit() and q.options:
+                    idx_num = int(answer) - 1
+                    if 0 <= idx_num < len(q.options):
+                        answer = q.options[idx_num]
+                decisions.append({"question_id": q.id, "answer": answer})
+
+        # Also parse --feedback
+        if not feedback:
+            # Check if feedback was passed as positional after the ID
+            if len(args) > 1:
+                feedback = " ".join(args[1:])
+
+        if not decisions and not feedback:
+            print("  Provide at least one --answer qid=value or --feedback 'text'")
+            print(f"  Pending questions:")
+            for i, q in enumerate(ci.questions, 1):
+                print(f"    {i}. [{q.id}] {q.question}")
+                if q.options:
+                    for j, opt in enumerate(q.options, 1):
+                        print(f"       {j}) {opt}")
+            await close_pool()
+            return
+
+        updated = await respond_to_check_in(ci.id, feedback, decisions)
+        print(f"  ✦ Response recorded for check-in {updated.id[:8]}")
+
+        # Process the response (take action based on answers)
+        engine = CheckInEngine()
+        result = await engine.process_response(updated.id)
+
+        if result["actions"]:
+            print(f"  Actions taken: {', '.join(result['actions'])}")
+
+        print()
+
+    elif subcommand == "create":
+        goal_id = args[0] if args else ""
+        if not goal_id:
+            print("Usage: job_star checkin create <goal-id> [--type progress|clarification|milestone|completion]")
+            await close_pool()
+            return
+
+        goal = await _resolve_goal(goal_id)
+        if not goal:
+            print(f"Goal not found: {goal_id}")
+            await close_pool()
+            return
+
+        steps = await get_steps(goal.id)
+        ci_type = CheckInType(flags.get("type", "progress"))
+
+        engine = CheckInEngine()
+        if ci_type == CheckInType.PROGRESS:
+            ci = await engine.create_progress_check_in(goal, steps)
+        elif ci_type == CheckInType.CLARIFICATION:
+            ci = await engine.create_clarification_check_in(goal, steps, issue=flags.get("issue", ""))
+        elif ci_type == CheckInType.MILESTONE:
+            ci = await engine.create_milestone_check_in(goal, steps, flags.get("description", ""))
+        elif ci_type == CheckInType.COMPLETION:
+            ci = await engine.create_completion_check_in(goal, steps)
+
+        print(ci.format(goal.title))
+        print(f"  Respond:  job_star checkin respond {ci.id[:8]} --feedback '...'\n")
+
+    elif subcommand == "pending":
+        """Show all check-ins awaiting a response across all goals."""
+        pending = await get_pending_check_ins()
+        if not pending:
+            print("  No pending check-ins. The system is not waiting for your input.")
+        else:
+            print(f"\n  {'─' * 70}")
+            print(f"  PENDING CHECK-INS ({len(pending)})")
+            print(f"  {'─' * 70}")
+            for ci in pending:
+                goal = await get_goal(ci.goal_id)
+                goal_title = goal.title if goal else ci.goal_id[:8]
+                type_icon = {
+                    CheckInType.PROGRESS: "📊",
+                    CheckInType.CLARIFICATION: "❓",
+                    CheckInType.MILESTONE: "🏁",
+                    CheckInType.COMPLETION: "✅",
+                }.get(ci.type, "📋")
+                print(f"  {type_icon} {ci.id[:8]}  {ci.type.value}  →  {goal_title[:40]}")
+                if ci.questions:
+                    print(f"           {len(ci.questions)} question(s) pending")
+            print(f"\n  Respond:  job_star checkin respond <id> --feedback '...'\n")
+
+    await close_pool()
+
+
+# ============================================================================
+# UPGRADE command
+# ============================================================================
+
+async def cmd_upgrade(positional: list[str], flags: dict[str, str]) -> None:
+    """Safe upgrade: pre-flight -> drain -> reap -> migrate -> restart -> verify."""
+    from .upgrade import run_upgrade, preflight_checks, reap_stale_steps
+
+    if flags.get("check"):
+        results = await preflight_checks()
+        print(f"\n  Pre-flight results:")
+        for k, v in results.items():
+            if isinstance(v, list):
+                for item in v:
+                    print(f"    {k}: {item}")
+            else:
+                print(f"    {k}: {v}")
+        await close_pool()
+        return
+
+    if flags.get("reap"):
+        reaped = await reap_stale_steps()
+        if reaped > 0:
+            print(f"  Reaped {reaped} orphaned step(s) -> reset to pending")
+        else:
+            print(f"  No orphaned steps found.")
+        await close_pool()
+        return
+
+    await run_upgrade(
+        commit=bool(flags.get("commit")),
+        dry_run=False,
+        reap_only=False,
+    )
+
+
 COMMANDS = {
     "add": cmd_add,
     "list": cmd_list,
@@ -495,6 +767,8 @@ COMMANDS = {
     "worker": cmd_worker,
     "panel": cmd_panel,
     "experts": cmd_experts,
+    "checkin": cmd_checkin,
+    "upgrade": cmd_upgrade,
 }
 
 
@@ -542,6 +816,20 @@ def main():
 
     panel                   Live console dashboard (goals, workers, events, queue)
       [--interval S]       Refresh seconds (default 5)
+
+    checkin list [--goal <id>]  List check-ins (structured progress dialogue)
+              [--status pending]
+    checkin show <id>           Show a check-in with questions and your response
+    checkin pending           Show all check-ins awaiting your response
+    checkin create <goal-id>   Create a check-in for a goal
+              [--type progress|clarification|milestone|completion]
+    checkin respond <id>       Respond to a check-in
+              [--answer qid=value]  Answer a specific question
+              [--feedback "text"]  Free-text feedback
+
+    upgrade [--check]        Safe upgrade: pre-flight → drain → reap → migrate → restart
+            [--reap]           Reap orphaned steps only
+            [--commit]         Commit code before upgrading
 
   ENVIRONMENT:
     GATEHOUSE_API_URL          Gatehouse-AI endpoint

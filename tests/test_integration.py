@@ -42,10 +42,12 @@ async def clean_db(db_pool):
     import asyncpg
     dsn = os.environ.get("DATABASE_URL", "postgresql://jobstar:jobstar@localhost:5432/job_star")
     conn = await asyncpg.connect(dsn=dsn)
+    await conn.execute("DELETE FROM check_ins WHERE goal_id IN (SELECT id FROM goals WHERE title LIKE 'Test:%' OR title LIKE 'Unique test goal%' OR source = 'test')")
     await conn.execute("DELETE FROM goals WHERE title LIKE 'Test:%' OR title LIKE 'Unique test goal%' OR source = 'test'")
     await conn.close()
     yield
     conn = await asyncpg.connect(dsn=dsn)
+    await conn.execute("DELETE FROM check_ins WHERE goal_id IN (SELECT id FROM goals WHERE title LIKE 'Test:%' OR title LIKE 'Unique test goal%' OR source = 'test')")
     await conn.execute("DELETE FROM goals WHERE title LIKE 'Test:%' OR title LIKE 'Unique test goal%' OR source = 'test'")
     await conn.close()
 
@@ -463,3 +465,249 @@ async def test_orchestrator_status(clean_db):
     assert "active" in status
     assert "completed" in status
     assert "gateway_healthy" in status
+
+
+# ============================================================================
+# Check-in tests
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_check_in_create_and_list(clean_db):
+    """Check-ins can be created and listed."""
+    from job_star.checkin import create_check_in, list_check_ins, CheckInType, CheckInStatus, CheckInQuestion
+    from job_star.db import create_goal, Domain, Urgency
+
+    goal = await create_goal(
+        "Test: check-in goal", "test description",
+        domain=Domain.CODING, urgency=Urgency.SOON, source="test",
+    )
+
+    questions = [
+        CheckInQuestion(question="Is this direction correct?", type="choice",
+                        options=["Yes", "No, adjust"], required=True),
+        CheckInQuestion(question="Any specific requirements?", type="text", required=False),
+    ]
+
+    ci = await create_check_in(
+        goal_id=goal.id,
+        type=CheckInType.PROGRESS,
+        progress_summary="3 of 5 steps completed.",
+        next_steps="Working on step 4.",
+        questions=questions,
+    )
+
+    assert ci.id is not None
+    assert ci.type == CheckInType.PROGRESS
+    assert ci.status == CheckInStatus.SENT
+    assert len(ci.questions) == 2
+    assert ci.questions[0].question == "Is this direction correct?"
+    assert ci.is_pending
+
+    # List check-ins for the goal
+    check_ins = await list_check_ins(goal_id=goal.id)
+    assert len(check_ins) == 1
+    assert check_ins[0].id == ci.id
+
+    # List by status
+    pending = await list_check_ins(goal_id=goal.id, status=CheckInStatus.SENT)
+    assert len(pending) == 1
+    assert pending[0].is_pending
+
+    from job_star.db import update_goal_status
+    await update_goal_status(goal.id, GoalStatus.COMPLETED)
+
+
+@pytest.mark.asyncio
+async def test_check_in_respond_and_action(clean_db):
+    """User can respond to a check-in and the system can process the response."""
+    from job_star.checkin import create_check_in, respond_to_check_in, get_check_in, CheckInType, CheckInStatus, CheckInQuestion
+    from job_star.checkin.engine import CheckInEngine
+    from job_star.db import create_goal, create_step, Domain, Urgency
+
+    goal = await create_goal(
+        "Test: check-in respond goal", "test description",
+        domain=Domain.CODING, urgency=Urgency.SOON, source="test",
+    )
+
+    # Create a completion check-in with an approval question
+    q = CheckInQuestion(
+        question="Do you accept this result, or does it need revision?",
+        type="approval", options=["Accept", "Needs revision"], required=True,
+    )
+    ci = await create_check_in(
+        goal_id=goal.id,
+        type=CheckInType.COMPLETION,
+        progress_summary="All steps complete.",
+        results="Delivered feature X.",
+        questions=[q],
+    )
+
+    # Respond with "Accept"
+    updated = await respond_to_check_in(
+        ci.id, "Looks great, accepting.",
+        decisions=[{"question_id": q.id, "answer": "Accept"}],
+    )
+
+    assert updated.status == CheckInStatus.RESPONDED
+    assert updated.response == "Looks great, accepting."
+    assert len(updated.decisions) == 1
+    assert updated.decisions[0]["answer"] == "Accept"
+
+    # The question should have the answer filled in
+    assert updated.questions[0].answer == "Accept"
+
+    # Process the response — should mark goal as completed
+    engine = CheckInEngine()
+    result = await engine.process_response(updated.id)
+
+    assert "goal_accepted" in result["actions"]
+
+    # Verify the goal was marked completed
+    from job_star.db import get_goal
+    updated_goal = await get_goal(goal.id)
+    assert updated_goal.status == GoalStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_check_in_reject_reopens_goal(clean_db):
+    """When user rejects completion, the goal should not be auto-completed."""
+    from job_star.checkin import create_check_in, respond_to_check_in, CheckInType, CheckInStatus, CheckInQuestion
+    from job_star.checkin.engine import CheckInEngine
+    from job_star.db import create_goal, Domain, Urgency, get_goal
+
+    goal = await create_goal(
+        "Test: check-in reject goal", "test description",
+        domain=Domain.CODING, urgency=Urgency.SOON, source="test",
+    )
+
+    q = CheckInQuestion(
+        question="Do you accept this result?", type="approval",
+        options=["Accept", "Needs revision"], required=True,
+    )
+    ci = await create_check_in(
+        goal_id=goal.id, type=CheckInType.COMPLETION,
+        progress_summary="Done.", questions=[q],
+    )
+
+    # Respond with "Needs revision"
+    updated = await respond_to_check_in(
+        ci.id, "This needs more work on the error handling.",
+        decisions=[{"question_id": q.id, "answer": "Needs revision"}],
+    )
+
+    engine = CheckInEngine()
+    result = await engine.process_response(updated.id)
+
+    assert "goal_rejected_revision_needed" in result["actions"]
+
+    # Goal should NOT be completed
+    updated_goal = await get_goal(goal.id)
+    assert updated_goal.status != GoalStatus.COMPLETED
+
+    from job_star.db import update_goal_status
+    await update_goal_status(goal.id, GoalStatus.COMPLETED)
+
+
+@pytest.mark.asyncio
+async def test_progress_check_in_trigger(clean_db):
+    """Progress check-in should trigger after N completed steps."""
+    from job_star.checkin import should_create_progress_check_in, DEFAULT_CHECK_IN_INTERVAL
+    from job_star.db import create_goal, create_step, update_step_status, get_steps, Domain, Urgency, StepStatus
+
+    goal = await create_goal(
+        "Test: trigger check-in", "test description",
+        domain=Domain.CODING, urgency=Urgency.SOON, source="test",
+    )
+
+    # Create steps
+    step1 = await create_step(goal.id, "Step 1", "desc 1", 1)
+    step2 = await create_step(goal.id, "Step 2", "desc 2", 2)
+    step3 = await create_step(goal.id, "Step 3", "desc 3", 3)
+
+    # No completed steps → no check-in
+    steps = await get_steps(goal.id)
+    assert not await should_create_progress_check_in(goal, steps)
+
+    # Complete some steps
+    await update_step_status(step1.id, StepStatus.COMPLETED)
+    await update_step_status(step2.id, StepStatus.COMPLETED)
+    steps = await get_steps(goal.id)
+
+    # 2 completed < default interval (3) → no check-in yet
+    if DEFAULT_CHECK_IN_INTERVAL > 2:
+        assert not await should_create_progress_check_in(goal, steps)
+
+    # Complete one more → should trigger
+    await update_step_status(step3.id, StepStatus.COMPLETED)
+    steps = await get_steps(goal.id)
+    assert await should_create_progress_check_in(goal, steps)
+
+    from job_star.db import update_goal_status
+    await update_goal_status(goal.id, GoalStatus.COMPLETED)
+
+
+@pytest.mark.asyncio
+async def test_completion_check_in_trigger(clean_db):
+    """Completion check-in should trigger when all steps are done."""
+    from job_star.checkin import should_create_completion_check_in, create_check_in, CheckInType
+    from job_star.db import create_goal, create_step, update_step_status, get_steps, Domain, Urgency, StepStatus
+
+    goal = await create_goal(
+        "Test: completion trigger", "test description",
+        domain=Domain.CODING, urgency=Urgency.SOON, source="test",
+    )
+
+    step1 = await create_step(goal.id, "Step 1", "desc 1", 1)
+    step2 = await create_step(goal.id, "Step 2", "desc 2", 2)
+
+    # Not all complete → no completion check-in
+    steps = await get_steps(goal.id)
+    assert not await should_create_completion_check_in(goal, steps)
+
+    # Complete all
+    await update_step_status(step1.id, StepStatus.COMPLETED)
+    await update_step_status(step2.id, StepStatus.COMPLETED)
+    steps = await get_steps(goal.id)
+    assert await should_create_completion_check_in(goal, steps)
+
+    # Create a completion check-in → should not trigger again
+    await create_check_in(goal_id=goal.id, type=CheckInType.COMPLETION,
+                          progress_summary="Done", questions=[])
+    assert not await should_create_completion_check_in(goal, steps)
+
+    from job_star.db import update_goal_status
+    await update_goal_status(goal.id, GoalStatus.COMPLETED)
+
+
+@pytest.mark.asyncio
+async def test_check_in_format_display(clean_db):
+    """Check-in format() produces readable terminal output."""
+    from job_star.checkin import create_check_in, CheckInType, CheckInQuestion
+    from job_star.db import create_goal, Domain, Urgency
+
+    goal = await create_goal(
+        "Test: format display", "test description",
+        domain=Domain.CODING, urgency=Urgency.SOON, source="test",
+    )
+
+    ci = await create_check_in(
+        goal_id=goal.id,
+        type=CheckInType.PROGRESS,
+        progress_summary="2 of 5 steps completed.",
+        next_steps="Working on the API layer.",
+        questions=[
+            CheckInQuestion(question="Which approach do you prefer?", type="choice",
+                            options=["REST", "GraphQL"], required=True),
+        ],
+    )
+
+    formatted = ci.format("Test: format display")
+    assert "PROGRESS" in formatted
+    assert "2 of 5 steps completed" in formatted
+    assert "Which approach do you prefer?" in formatted
+    assert "REST" in formatted
+    assert "GraphQL" in formatted
+    assert "awaiting response" in formatted
+
+    from job_star.db import update_goal_status
+    await update_goal_status(goal.id, GoalStatus.COMPLETED)

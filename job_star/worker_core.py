@@ -115,7 +115,26 @@ class Worker:
         return True
 
     async def run(self) -> None:
-        """Run the worker loop until max_cycles or interrupted."""
+        """Run the worker loop until max_cycles or interrupted.
+
+        Handles SIGTERM gracefully: stops claiming new work and waits for
+        the current step to finish before exiting. This prevents orphaned
+        in_progress steps when systemd stops the service.
+        """
+        import signal
+
+        self._draining = False
+
+        def _request_drain(signum, frame):
+            self._draining = True
+            print(f"  [{self.worker_id}] SIGTERM received — draining (finishing current step, no new claims)", flush=True)
+
+        # Register SIGTERM handler for graceful shutdown
+        try:
+            signal.signal(signal.SIGTERM, _request_drain)
+        except (ValueError, OSError):
+            pass  # can't set signal in non-main thread
+
         print(f"  Worker '{self.worker_id}' started. interval={self.interval}s", flush=True)
         print(f"  Machine: {self.worker_machine or '(unknown)'}", flush=True)
         if self.urgency:
@@ -133,6 +152,11 @@ class Worker:
         cycle = 0
         try:
             while True:
+                # Check if we're draining (SIGTERM received)
+                if getattr(self, '_draining', False):
+                    print(f"  [{self.worker_id}] drain complete — exiting gracefully.", flush=True)
+                    break
+
                 if self.max_cycles and cycle >= self.max_cycles:
                     print(f"  Worker '{self.worker_id}' finished after {cycle} cycles.", flush=True)
                     break
@@ -140,6 +164,9 @@ class Worker:
 
                 did_work = await self.run_once()
                 if not did_work:
+                    if getattr(self, '_draining', False):
+                        print(f"  [{self.worker_id}] drain complete — exiting gracefully.", flush=True)
+                        break
                     print(f"  [{self.worker_id}] no work available, sleeping {self.interval}s...", flush=True)
                     await asyncio.sleep(self.interval)
         except asyncio.CancelledError:

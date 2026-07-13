@@ -27,6 +27,7 @@ from .followup import FollowUpEngine
 from .conflict import detect_conflicts
 from .intake import intake as do_intake
 from .executors import get_executor, register_defaults
+from .checkin import CheckInEngine, CheckInType, CheckInStatus
 
 
 class Orchestrator:
@@ -47,6 +48,7 @@ class Orchestrator:
         self.supervisor = supervisor or Supervisor()
         self.followup = followup or FollowUpEngine()
         self.gateway_monitor = gateway_monitor or GatewayMonitor()
+        self.checkin_engine = CheckInEngine(self.gateway_monitor)
         register_defaults()  # register default + gatehouse-ai executors
 
     # ===================================================================
@@ -299,6 +301,20 @@ Break this goal into concrete steps."""
             await update_step_status(step.id, StepStatus.FAILED, model=result.model if result else "none")
             self.supervisor.budget.record_failure(step.id)
             await self.followup.emit(goal, "step_failed", result.error if result else "No model available", step.id)
+            # If a step fails repeatedly, create a clarification check-in
+            all_steps = await get_steps(goal_id)
+            failed_steps = [s for s in all_steps if s.status == StepStatus.FAILED]
+            if len(failed_steps) >= 2:
+                try:
+                    check_in = await self.checkin_engine.create_clarification_check_in(
+                        goal, all_steps, step=step,
+                        issue=f"Step '{step.title}' failed: {result.error if result else 'unknown'}",
+                    )
+                    await audit("clarification_checkin_created", {
+                        "check_in_id": check_in.id,
+                    }, goal_id, step.id)
+                except Exception:
+                    pass  # check-in failure should not block error reporting
             return result or ExecutionResult(success=False, error="No model available", model="none")
 
         # Post-execution supervision check
@@ -339,9 +355,29 @@ Break this goal into concrete steps."""
         await update_goal_progress(goal_id, progress)
 
         if progress >= 1.0:
-            await update_goal_status(goal_id, GoalStatus.COMPLETED)
-            await audit("goal_completed", {}, goal_id)
-            await self.followup.emit(goal, "goal_completed", f"Goal completed: {goal.title}")
+            # Check if a completion check-in already exists
+            from .checkin import should_create_completion_check_in
+            if await should_create_completion_check_in(goal, all_steps):
+                check_in = await self.checkin_engine.create_completion_check_in(goal, all_steps)
+                await self.followup.emit(goal, "goal_completed",
+                    f"Goal ready for review: {goal.title}. Check-in {check_in.id[:8]} created.")
+                await audit("completion_checkin_created", {
+                    "check_in_id": check_in.id,
+                }, goal_id)
+            else:
+                await update_goal_status(goal_id, GoalStatus.COMPLETED)
+                await audit("goal_completed", {}, goal_id)
+                await self.followup.emit(goal, "goal_completed", f"Goal completed: {goal.title}")
+        else:
+            # Maybe create a progress check-in (after every N steps)
+            try:
+                check_in = await self.checkin_engine.maybe_create_progress_check_in(goal, all_steps)
+                if check_in:
+                    await audit("progress_checkin_created", {
+                        "check_in_id": check_in.id,
+                    }, goal_id, step.id)
+            except Exception:
+                pass  # check-in generation failure should not block step completion
 
         await self.followup.emit(goal, "step_completed", f"Completed: {step.title}", step.id)
 

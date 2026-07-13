@@ -176,6 +176,49 @@ CREATE INDEX idx_job_queue_status_priority ON job_queue(status, priority DESC, c
 CREATE INDEX idx_job_queue_goal ON job_queue(goal_id);
 
 -- ============================================================================
+-- CHECK-INS: Structured two-way progress dialogue between job-star and user.
+-- Created at key lifecycle points (progress, clarification, milestone, completion).
+-- AI-generated content, persistent, asynchronous, actionable.
+-- ============================================================================
+CREATE TABLE check_ins (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    goal_id UUID NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+    step_id UUID REFERENCES goal_steps(id) ON DELETE SET NULL,
+
+    type TEXT NOT NULL DEFAULT 'progress',
+        -- progress, clarification, milestone, completion
+    status TEXT NOT NULL DEFAULT 'draft',
+        -- draft, sent, awaiting_response, responded, actioned, expired
+
+    -- Structured content (AI-generated)
+    progress_summary TEXT,
+    next_steps TEXT,
+    results TEXT,
+    questions JSONB DEFAULT '[]',
+        -- [{id, question, type, options[], required, answer}]
+
+    -- User response
+    response TEXT,
+    decisions JSONB DEFAULT '[]',
+        -- [{question_id, answer}]
+    responded_at TIMESTAMP,
+
+    -- Metadata
+    created_by TEXT NOT NULL DEFAULT 'system',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_checkins_goal ON check_ins(goal_id);
+CREATE INDEX idx_checkins_status ON check_ins(status);
+CREATE INDEX idx_checkins_type ON check_ins(type);
+
+CREATE TRIGGER checkins_updated_at
+    BEFORE UPDATE ON check_ins
+    FOR EACH ROW
+    EXECUTE FUNCTION update_timestamp();
+
+-- ============================================================================
 -- EVENTS: Distributed pub/sub for SSE and cross-machine notifications.
 -- Consumers read from this table and delete or archive old events.
 -- ============================================================================

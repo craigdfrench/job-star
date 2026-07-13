@@ -254,3 +254,165 @@ async def recent_events(
     events.reverse()
     return {"events": events}
 
+
+# ============================================================================
+# CHECK-IN routes — structured progress dialogue
+# ============================================================================
+
+@router.get("/check-ins")
+async def list_check_ins_api(
+    goal_id: str | None = None,
+    status: str | None = None,
+    type: str | None = None,
+    limit: int = 50,
+    user=Depends(get_current_user),
+):
+    """List check-ins with optional filters."""
+    from job_star.checkin import list_check_ins, CheckInStatus, CheckInType
+    status_filter = CheckInStatus(status) if status else None
+    type_filter = CheckInType(type) if type else None
+    check_ins = await list_check_ins(
+        goal_id=goal_id, status=status_filter, type=type_filter, limit=limit,
+    )
+    return {
+        "check_ins": [
+            {
+                "id": ci.id,
+                "goal_id": ci.goal_id,
+                "step_id": ci.step_id,
+                "type": ci.type.value,
+                "status": ci.status.value,
+                "progress_summary": ci.progress_summary,
+                "next_steps": ci.next_steps,
+                "results": ci.results,
+                "questions": [q.to_dict() for q in ci.questions],
+                "response": ci.response,
+                "decisions": ci.decisions,
+                "responded_at": ci.responded_at,
+                "created_at": ci.created_at,
+                "is_pending": ci.is_pending,
+            }
+            for ci in check_ins
+        ],
+        "total": len(check_ins),
+    }
+
+
+@router.get("/check-ins/{check_in_id}")
+async def get_check_in_api(
+    check_in_id: str,
+    user=Depends(get_current_user),
+):
+    """Get a single check-in with full details."""
+    from job_star.checkin import get_check_in
+    ci = await get_check_in(check_in_id)
+    if not ci:
+        raise HTTPException(status_code=404, detail="Check-in not found")
+    return {
+        "id": ci.id,
+        "goal_id": ci.goal_id,
+        "step_id": ci.step_id,
+        "type": ci.type.value,
+        "status": ci.status.value,
+        "progress_summary": ci.progress_summary,
+        "next_steps": ci.next_steps,
+        "results": ci.results,
+        "questions": [q.to_dict() for q in ci.questions],
+        "response": ci.response,
+        "decisions": ci.decisions,
+        "responded_at": ci.responded_at,
+        "created_at": ci.created_at,
+        "updated_at": ci.updated_at,
+        "is_pending": ci.is_pending,
+    }
+
+
+@router.post("/check-ins/{check_in_id}/respond")
+async def respond_to_check_in_api(
+    check_in_id: str,
+    body: dict,
+    user=Depends(get_current_user),
+):
+    """Respond to a check-in with feedback and/or answers to questions.
+
+    Body:
+    {
+        "response": "free-text feedback",
+        "decisions": [
+            {"question_id": "abc123", "answer": "Accept"}
+        ]
+    }
+    """
+    from job_star.checkin import respond_to_check_in
+    from job_star.checkin.engine import CheckInEngine
+
+    response_text = body.get("response", "")
+    decisions = body.get("decisions", [])
+
+    if not response_text and not decisions:
+        raise HTTPException(status_code=400, detail="Provide response text or decisions")
+
+    updated = await respond_to_check_in(check_in_id, response_text, decisions)
+
+    # Process the response (take action based on answers)
+    engine = CheckInEngine()
+    result = await engine.process_response(updated.id)
+
+    await publish("checkin.responded", {
+        "check_in_id": check_in_id,
+        "goal_id": updated.goal_id,
+        "actions": result.get("actions", []),
+    })
+
+    return {
+        "success": True,
+        "check_in_id": updated.id,
+        "status": updated.status.value,
+        "actions": result.get("actions", []),
+    }
+
+
+@router.post("/goals/{goal_id}/check-in")
+async def create_check_in_api(
+    goal_id: str,
+    body: dict,
+    user=Depends(get_current_user),
+):
+    """Create a check-in for a goal.
+
+    Body: {"type": "progress|clarification|milestone|completion", "issue": "..."}
+    """
+    from job_star.checkin import CheckInType
+    from job_star.checkin.engine import CheckInEngine
+    from job_star.db import get_goal, get_steps
+
+    goal = await get_goal(goal_id)
+    if not goal:
+        raise HTTPException(status_code=404, detail="Goal not found")
+
+    ci_type_str = body.get("type", "progress")
+    try:
+        ci_type = CheckInType(ci_type_str)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid type: {ci_type_str}")
+
+    steps = await get_steps(goal_id)
+    engine = CheckInEngine()
+
+    if ci_type == CheckInType.PROGRESS:
+        ci = await engine.create_progress_check_in(goal, steps)
+    elif ci_type == CheckInType.CLARIFICATION:
+        ci = await engine.create_clarification_check_in(goal, steps, issue=body.get("issue", ""))
+    elif ci_type == CheckInType.MILESTONE:
+        ci = await engine.create_milestone_check_in(goal, steps, body.get("description", ""))
+    elif ci_type == CheckInType.COMPLETION:
+        ci = await engine.create_completion_check_in(goal, steps)
+
+    return {
+        "success": True,
+        "check_in_id": ci.id,
+        "type": ci.type.value,
+        "status": ci.status.value,
+        "questions": len(ci.questions),
+    }
+
