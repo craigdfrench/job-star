@@ -196,6 +196,24 @@ async def check_checkin_backlog(conn) -> list[Finding]:
             message=f"{pending} pending check-in(s) (threshold {Thresholds.MAX_PENDING_CHECKINS}) — user can't keep up",
         ))
 
+    # Auto-accept completion check-ins older than 7 days
+    completion_expired = await conn.execute("""
+        UPDATE check_ins SET status = 'actioned', responded_at = NOW(),
+               response = 'Auto-accepted after 7-day timeout',
+               decisions = '[{"question_id": "auto", "answer": "Accept"}]'::jsonb
+        WHERE status = 'sent' AND type = 'completion'
+          AND created_at < NOW() - INTERVAL '7 days'
+    """)
+    if int(completion_expired.split()[-1]) > 0:
+        findings.append(Finding(
+            severity="info",
+            category="checkin_timeout",
+            goal_id=None,
+            message=f"Auto-accepted {completion_expired.split()[-1]} completion check-in(s) after 7-day timeout",
+            fixed=True,
+            action="auto-accepted",
+        ))
+
     # Also flag very old pending check-ins
     old = await conn.fetch("""
         SELECT ci.id, ci.type, g.title
@@ -337,6 +355,27 @@ async def run_monitor(auto_fix: bool = True) -> MonitorReport:
                 goal_id=None,
                 message="Gateway is down — execution will fail",
             ))
+
+        # ── Auto-reset failed steps after cooldown ──────────────────
+        if auto_fix:
+            reset_result = await conn.execute("""
+                UPDATE goal_steps SET status = 'pending', result = NULL,
+                       model = NULL, attempted_at = NULL, completed_at = NULL
+                WHERE status = 'failed'
+                  AND attempted_at < NOW() - INTERVAL '1 hour'
+                  AND goal_id IN (SELECT id FROM goals WHERE status = 'active')
+            """)
+            reset_count = int(reset_result.split()[-1]) if reset_result else 0
+            if reset_count > 0:
+                report.findings.append(Finding(
+                    severity="info",
+                    category="auto_reset_failed",
+                    goal_id=None,
+                    message=f"Reset {reset_count} failed step(s) to pending after 1-hour cooldown",
+                    fixed=True,
+                    action=f"reset {reset_count} step(s) to pending",
+                ))
+                report.fixed += 1
 
         # ── Apply safe fixes ──────────────────────────────────────────
         if auto_fix:

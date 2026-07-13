@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Job-Star — Add a Goal</title>
+  <style>
+    :root {
+      --bg: #0f1117; --card: #1a1d27; --border: #2a2d3a;
+      --text: #e6e6e6; --muted: #9aa3b2; --accent: #4ea1ff;
+      --green: #3bd972; --red: #ff6b6b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg); color: var(--text); line-height: 1.5;
+    }
+    .container { max-width: 600px; margin: 0 auto; padding: 24px 16px; }
+    h1 { font-size: 1.4rem; margin: 0 0 4px; }
+    .subtitle { color: var(--muted); margin-bottom: 24px; font-size: 0.9rem; }
+    .field { margin-bottom: 16px; }
+    label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 4px; font-weight: 500; }
+    input, textarea, select {
+      width: 100%; padding: 10px 12px; background: var(--card);
+      border: 1px solid var(--border); border-radius: 6px; color: var(--text);
+      font-family: inherit; font-size: 14px;
+    }
+    input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
+    textarea { min-height: 80px; resize: vertical; }
+    .row { display: flex; gap: 12px; }
+    .row .field { flex: 1; }
+    button {
+      padding: 10px 20px; border: 1px solid var(--border); border-radius: 6px;
+      background: var(--card); color: var(--text); cursor: pointer;
+      font-family: inherit; font-size: 14px; font-weight: 500; transition: all 0.15s;
+    }
+    button:hover { border-color: var(--accent); }
+    .btn-primary { background: var(--accent); border-color: var(--accent); color: #0f1117; }
+    .btn-primary:hover { background: #3d90e8; }
+    .btn-primary:disabled { opacity: 0.5; cursor: default; }
+    .result { margin-top: 16px; padding: 14px; border-radius: 8px; display: none; }
+    .result-success { background: #1a2e1a; border: 1px solid var(--green); }
+    .result-error { background: #2e1a1a; border: 1px solid var(--red); }
+    .user-badge { display: inline-block; padding: 3px 10px; background: var(--card);
+      border: 1px solid var(--border); border-radius: 12px; font-size: 0.8rem; color: var(--muted); }
+    .actions { display: flex; gap: 10px; margin-top: 20px; }
+    .link { color: var(--accent); text-decoration: none; }
+    .link:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🌟 Job-Star — Add a Goal</h1>
+    <p class="subtitle">What do you need done? Job-Star will break it into steps and work on it.</p>
+    <div id="user-info" style="margin-bottom: 16px;"></div>
+
+    <form id="goal-form" onsubmit="return submitGoal(event)">
+      <div class="field">
+        <label for="title">What do you need? *</label>
+        <input type="text" id="title" placeholder="e.g. Fix the login bug on the settings page" required maxlength="255">
+      </div>
+
+      <div class="field">
+        <label for="description">Details (optional)</label>
+        <textarea id="description" placeholder="Add any context, links, or specifics that would help..."></textarea>
+      </div>
+
+      <div class="row">
+        <div class="field">
+          <label for="urgency">How urgent?</label>
+          <select id="urgency">
+            <option value="soon">Soon — important</option>
+            <option value="idle-opportunistic">Whenever — low priority</option>
+            <option value="imperative">Urgent — do it now</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="domain">What type?</label>
+          <select id="domain">
+            <option value="coding">Coding / Software</option>
+            <option value="infra">Infrastructure / Server</option>
+            <option value="personal">Personal / Errand</option>
+            <option value="meta">Job-Star itself</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button type="submit" class="btn-primary" id="submit-btn">Add Goal</button>
+        <a href="/checkins" class="link" style="align-self:center;">View Check-ins</a>
+      </div>
+    </form>
+
+    <div class="result" id="result"></div>
+  </div>
+
+  <script>
+    const API = window.location.origin + '/api/v1';
+
+    async function loadUser() {
+      try {
+        const r = await fetch(`${API}/goals`, { headers: { 'Authorization': 'Bearer ' + (document.cookie.match(/job_star_token=([^;]+)/)||[])[1] || '' } });
+        // If we can reach the API, we're authenticated via Tailscale
+        const info = document.getElementById('user-info');
+        info.innerHTML = '<span class="user-badge">Authenticated via Tailscale</span>';
+      } catch(e) {
+        // Not critical — form still works
+      }
+    }
+
+    async function submitGoal(event) {
+      event.preventDefault();
+      const btn = document.getElementById('submit-btn');
+      const result = document.getElementById('result');
+      btn.disabled = true;
+      btn.textContent = 'Adding...';
+
+      const body = {
+        title: document.getElementById('title').value.trim(),
+        description: document.getElementById('description').value.trim(),
+        urgency: document.getElementById('urgency').value,
+        domain: document.getElementById('domain').value,
+        source: 'web',
+      };
+
+      try {
+        const r = await fetch(`${API}/intake`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+
+        if (!r.ok) {
+          const err = await r.text();
+          throw new Error(err.substring(0, 200));
+        }
+
+        const goal = await r.json();
+        result.style.display = 'block';
+        result.className = 'result result-success';
+        result.innerHTML = `
+          <strong>✓ Goal added!</strong><br>
+          <strong>${escapeHtml(goal.title)}</strong><br>
+          <span style="color:var(--muted)">ID: ${goal.id.slice(0,8)} • ${goal.domain} • ${goal.urgency}</span><br><br>
+          Job-Star will triage this, break it into steps, and start working on it.<br>
+          You'll get an email/Chat notification when there's something to review.
+          <br><br>
+          <a href="/checkins" class="link">View your check-ins</a>
+        `;
+        document.getElementById('goal-form').reset();
+      } catch(e) {
+        result.style.display = 'block';
+        result.className = 'result result-error';
+        result.innerHTML = `<strong>✗ Could not add goal.</strong><br>${escapeHtml(e.message)}`;
+      }
+
+      btn.disabled = false;
+      btn.textContent = 'Add Goal';
+      return false;
+    }
+
+    function escapeHtml(s) {
+      const d = document.createElement('div');
+      d.textContent = s || '';
+      return d.innerHTML;
+    }
+
+    loadUser();
+  </script>
+</body>
+</html>

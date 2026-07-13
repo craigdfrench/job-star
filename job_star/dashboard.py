@@ -48,15 +48,37 @@ async def render_dashboard() -> str:
             FROM goals
         """)
 
-        # Active goals that need attention (0% with no steps at all, or blocked)
-        stuck_goals = await conn.fetch("""
+        # Active goals that need attention: unstarted (0 steps) or awaiting review (100% with completion check-in)
+        unstarted_goals = await conn.fetch("""
             SELECT g.id, g.title, g.urgency, g.progress
             FROM goals g
             WHERE g.status = 'active'
               AND NOT EXISTS (SELECT 1 FROM goal_steps s WHERE s.goal_id = g.id)
               AND g.progress < 1.0
             ORDER BY CASE g.urgency WHEN 'imperative' THEN 0 WHEN 'soon' THEN 1 ELSE 2 END
+            LIMIT 3
+        """)
+
+        # Goals at 100% with pending completion check-ins (awaiting user review)
+        awaiting_review = await conn.fetch("""
+            SELECT g.id, g.title, g.urgency, g.progress
+            FROM goals g
+            JOIN check_ins ci ON ci.goal_id = g.id
+            WHERE g.status = 'active' AND g.progress >= 1.0
+              AND ci.status = 'sent' AND ci.type = 'completion'
+            ORDER BY g.updated_at DESC
             LIMIT 5
+        """)
+
+        # Goals with failed steps and no pending steps (stuck)
+        stuck_failed = await conn.fetch("""
+            SELECT g.id, g.title, g.urgency, g.progress
+            FROM goals g
+            WHERE g.status = 'active'
+              AND EXISTS (SELECT 1 FROM goal_steps s WHERE s.goal_id = g.id AND s.status = 'failed')
+              AND NOT EXISTS (SELECT 1 FROM goal_steps s WHERE s.goal_id = g.id AND s.status = 'pending')
+            ORDER BY g.updated_at DESC
+            LIMIT 3
         """)
 
         # Recent activity (last 24h)
@@ -67,7 +89,9 @@ async def render_dashboard() -> str:
 
         # Pending steps count
         pending_steps = await conn.fetchval(
-            "SELECT count(*) FROM goal_steps WHERE status = 'pending'"
+            """SELECT count(*) FROM goal_steps s
+               JOIN goals g ON s.goal_id = g.id
+               WHERE s.status = 'pending' AND g.status = 'active'"""
         )
 
         # Total cost
@@ -129,12 +153,23 @@ async def render_dashboard() -> str:
     active = goal_stats["active"]
     if active:
         lines.append(f"  [=] {active} active goals, {pending_steps} pending steps")
-        if stuck_goals:
-            lines.append(f"      Goals that need starting:")
-            for g in stuck_goals[:3]:
+        if unstarted_goals:
+            lines.append(f"      Needs starting (0 steps):")
+            for g in unstarted_goals[:3]:
                 lines.append(f"        • {g['title'][:50]}")
             lines.append(f"      Run: job_star work <id>    (start a goal)")
-        lines.append("")
+            lines.append("")
+        if awaiting_review:
+            lines.append(f"      Awaiting your review (100% done):")
+            for g in awaiting_review[:3]:
+                lines.append(f"        • {g['title'][:50]}")
+            lines.append(f"      Run: job_star review    (respond to check-ins)")
+            lines.append("")
+        if stuck_failed:
+            lines.append(f"      Stuck (failed steps, no pending):")
+            for g in stuck_failed[:3]:
+                lines.append(f"        • {g['title'][:50]}")
+            lines.append("")
 
     # System health
     cost_str = f"${total_cost:.2f}" if total_cost > 0 else "$0"

@@ -201,3 +201,12 @@ async def checkins_list_page():
     from fastapi.responses import HTMLResponse
     html = Path(__file__).parent / "checkins_page.html"
     return HTMLResponse(html.read_text())
+
+
+@app.get("/add")
+async def intake_page():
+    """Web intake form for adding goals - no auth (tailnet boundary)."""
+    from pathlib import Path
+    from fastapi.responses import HTMLResponse
+    html = Path(__file__).parent / "intake_page.html"
+    return HTMLResponse(html.read_text())
