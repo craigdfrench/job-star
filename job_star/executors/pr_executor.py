@@ -262,7 +262,12 @@ class PRExecutor(DefaultExecutor):
 
         code, out, err = self._git(["push", "-u", "origin", branch], repo_path)
         if code != 0:
-            return False, f"push failed: {err}"
+            # Remote branch may be behind/diverged because the worktree is a
+            # fresh clone and the previous push was from an earlier state. Force
+            # push the feature branch to overwrite the remote version.
+            code, out, err = self._git(["push", "--force-with-lease", "-u", "origin", branch], repo_path)
+            if code != 0:
+                return False, f"push failed: {err}"
 
         return True, "committed and pushed"
 
