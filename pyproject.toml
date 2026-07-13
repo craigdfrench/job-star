@@ -41,4 +41,5 @@ packages = [
     "job_star.followup",
     "job_star.gatehouse",
     "job_star.api",
+    "job_star.worker",
 ]
