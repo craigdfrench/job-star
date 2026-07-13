@@ -1,0 +1,11 @@
+# Job-Star API - HTTP access via Tailscale network
+# No tailscale_auth needed: access is already gated by Tailscale network boundary.
+# Follows the sessions.craigdfrench.com pattern: HTTP serves the app, HTTPS redirects to HTTP.
+
+http://job-star.craigdfrench.com, http://job-star-api.craigdfrench.com {
+    reverse_proxy localhost:8003
+}
+
+https://job-star.craigdfrench.com, https://job-star-api.craigdfrench.com {
+    redir http://{host}{uri} 303
+}

@@ -1,0 +1,20 @@
+[Unit]
+Description=Job-Star worker service (distributed step executor)
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/craig/job-star/job-star
+Environment=PYTHONPATH=/home/craig/job-star/job-star
+Environment=DATABASE_URL=postgresql://jobstar:jobstar@localhost:5432/job_star
+Environment=GATEHOUSE_API_URL=http://gatehouse-ai.craigdfrench.com/v1
+Environment=JOB_STAR_WORKER=nexus
+Environment=JOB_STAR_MACHINE=DESKTOP-RNK6J72
+EnvironmentFile=/etc/caddy/cloudflare.env
+ExecStart=/home/craig/job-star/job-star/.venv/bin/python -m job_star.worker --interval 15
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

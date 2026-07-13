@@ -1,0 +1,21 @@
+[Unit]
+Description=Job-Star API service (FastAPI on port 8003)
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/craig/job-star/job-star
+Environment=PYTHONPATH=/home/craig/job-star/job-star
+Environment=JOB_STAR_API_HOST=127.0.0.1
+Environment=JOB_STAR_API_PORT=8003
+Environment=DATABASE_URL=postgresql://jobstar:jobstar@localhost:5432/job_star
+Environment=GATEHOUSE_API_URL=http://gatehouse-ai.craigdfrench.com/v1
+EnvironmentFile=/etc/caddy/cloudflare.env
+EnvironmentFile=/etc/job-star-api-secrets.env
+ExecStart=/home/craig/job-star/job-star/.venv/bin/python -m job_star.api
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

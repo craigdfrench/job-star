@@ -1,0 +1,12 @@
+[Unit]
+Description=Job-Star panel (persistent tmux session)
+After=network.target docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/home/craig/job-star/job-star/run-tmux-panel.sh
+ExecStop=/usr/bin/tmux kill-session -t job-star-panel
+
+[Install]
+WantedBy=multi-user.target
