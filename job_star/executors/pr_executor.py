@@ -55,20 +55,25 @@ def parse_file_blocks(content: str) -> list[FileChange]:
       ```language
       content
       ```
-    And:
-      File: `path/to/file.go`
-      ```language
-      content
-      ```
+
+    Robust to:
+      - Explanatory text before the first file block
+      - 2 or 3 backtick code fences
+      - Missing language tag
+      - File: `path` or ## File: path
     """
     changes: list[FileChange] = []
 
-    # Pattern: header line + fenced code block
-    # Match "## File: path" or "File: `path`" followed by a code block
-    pattern = r'(?:##\s*)?File:\s*`?([^\n`]+)`?\s*\n+```\w*\n(.*?)```'
+    # Strip any thinking/explanation before the first file block
+    if "## File:" in content:
+        first = content.find("## File:")
+        content = content[first:]
+
+    # Match header then a fenced code block (2 or 3 backticks, optional language)
+    pattern = r'(?:##\s*)?File:\s*`?([^\n`]+?)`?\s*\n+(``|```)\w*\n(.*?)\n\2'
     for match in re.finditer(pattern, content, re.DOTALL):
         path = match.group(1).strip()
-        file_content = match.group(2)
+        file_content = match.group(3)
         # Strip trailing newline
         if file_content.endswith('\n'):
             file_content = file_content[:-1]
@@ -144,19 +149,26 @@ class PRExecutor(DefaultExecutor):
         os.makedirs(self.worktree_dir, exist_ok=True)
         worktree_path = os.path.join(self.worktree_dir, branch.replace("/", "_"))
 
-        # Check if worktree already exists
+        # Validate any existing directory: it must be a real git worktree.
         if os.path.exists(worktree_path):
-            # Reuse existing worktree — update it
+            git_file = os.path.join(worktree_path, ".git")
+            if not os.path.isfile(git_file):
+                # Corrupt or stale directory — remove it and recreate.
+                import shutil
+                shutil.rmtree(worktree_path)
+
+        if os.path.exists(worktree_path):
+            # Reuse existing worktree — make sure branch exists and switch.
             code, _, err = self._git(["fetch", "origin"], repo_path)
-            code, _, err = self._git(["checkout", branch], worktree_path)
+            code, out, err2 = self._git(["checkout", branch], worktree_path)
             if code != 0:
-                # Branch doesn't exist yet — create it from base
+                # Branch may not exist locally yet — create it from base
                 code, _, err = self._git(
                     ["checkout", "-b", branch, f"origin/{self.base_branch}"],
                     worktree_path,
                 )
                 if code != 0:
-                    return False, f"failed to create branch in worktree: {err}"
+                    return False, f"failed to create branch in worktree: {err} / {err2}"
             self._active_worktree = worktree_path
             return True, f"reusing worktree {worktree_path}"
 
@@ -419,10 +431,6 @@ Output ONLY file blocks."""
             # Parse file changes from AI output
             changes = parse_file_blocks(result.content) + parse_delete_blocks(result.content)
             if not changes:
-                # No file changes parsed. If the step explicitly asked for
-                # docs/analysis, the prompt should not have been routed through
-                # the PR executor. Fail so the orchestrator can retry or surface
-                # a clarification check-in to the user.
                 return ExecutionResult(
                     content=result.content,
                     model=result.model,
