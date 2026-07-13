@@ -173,10 +173,13 @@ class PRExecutor(DefaultExecutor):
             return False, f"clone created at {worktree_path} but .git directory is missing"
 
         # Create or switch the target branch
-        # Check if the branch exists in the upstream (origin) or locally
-        code, out, _ = self._git(["branch", "-a"], worktree_path)
-        branch_exists = f"origin/{branch}" in out or f"{branch}\n" in out
+        # Ensure the remote points to the actual GitHub URL so gh pr create works.
+        # The local clone inherited origin = repo_path, which is not a GitHub host.
+        code, remote_url, _ = self._git(["remote", "get-url", "origin"], repo_path)
+        if code == 0 and remote_url.strip():
+            self._git(["remote", "set-url", "origin", remote_url.strip()], worktree_path)
 
+        # Create or switch the target branch
         code, out, err = self._git(["checkout", "-B", branch, f"origin/{self.base_branch}"], worktree_path)
         if code != 0:
             return False, f"failed to create branch in checkout: {err}"
