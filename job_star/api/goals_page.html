@@ -169,7 +169,7 @@
       const reviewLink = g.pending_checkin_id ? `<a href="/checkin/${g.pending_checkin_id}" class="badge" style="background:#1a3a1a;color:var(--green);text-decoration:none;margin-left:auto;">Review →</a>` : '';
 
       return `
-        <div class="goal-card">
+        <div class="goal-card" onclick="window.location.href='/goal/${g.id}'" style="cursor:pointer">
           <div class="goal-title">${escapeHtml(g.title)}</div>
           <div class="goal-meta">
             <span class="goal-id">${g.id.slice(0,8)}</span>

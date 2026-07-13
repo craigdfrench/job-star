@@ -237,6 +237,22 @@ async def complete_goal_api(
     return {"success": True, "goal_id": goal_id, "status": "completed"}
 
 
+@router.post("/goals/{goal_id}/abandon")
+async def abandon_goal_api(
+    goal_id: str,
+    user=Depends(get_current_user),
+):
+    """Mark a goal as abandoned (cancelled). Used for personal goals that
+    need human action, or goals no longer wanted."""
+    g = await get_goal(goal_id)
+    if not g:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    await update_goal_status(goal_id, GoalStatus.ABANDONED)
+    await audit("goal_abandoned", {"via": "api", "user": user.email}, goal_id)
+    await publish("goal.abandoned", {"goal_id": goal_id})
+    return {"success": True, "goal_id": goal_id, "status": "abandoned"}
+
+
 @router.post("/ask", response_model=AskResponse, status_code=status.HTTP_201_CREATED)
 async def ask_user(
     req: AskRequest,

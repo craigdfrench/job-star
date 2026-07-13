@@ -219,3 +219,12 @@ async def goals_page():
     from fastapi.responses import HTMLResponse
     html = Path(__file__).parent / "goals_page.html"
     return HTMLResponse(html.read_text())
+
+
+@app.get("/goal/{goal_id}")
+async def goal_detail_page(goal_id: str):
+    """Single goal detail page - no auth (tailnet boundary)."""
+    from pathlib import Path
+    from fastapi.responses import HTMLResponse
+    html = Path(__file__).parent / "goal_detail_page.html"
+    return HTMLResponse(html.read_text())
