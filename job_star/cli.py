@@ -775,6 +775,24 @@ async def cmd_commentary(positional: list[str], flags: dict[str, str]) -> None:
 
 
 # ============================================================================
+# MONITOR command — system integrity check
+# ============================================================================
+
+async def cmd_monitor(positional: list[str], flags: dict[str, str]) -> None:
+    """System integrity monitor: detect and fix runaway loops, orphans, stale goals.
+
+    Usage:
+      job_star monitor           Run checks + apply safe fixes
+      job_star monitor --check   Report only, no fixes
+    """
+    from .monitor import run_monitor, format_report
+    auto_fix = not flags.get("check")
+    report = await run_monitor(auto_fix=auto_fix)
+    print(format_report(report))
+
+
+
+# ============================================================================
 # DASHBOARD + REVIEW commands (simplified UX)
 # ============================================================================
 
@@ -808,6 +826,7 @@ COMMANDS = {
     "upgrade": cmd_upgrade,
     "commentary": cmd_commentary,
     "review": cmd_review,
+    "monitor": cmd_monitor,
     "home": cmd_home,
 }
 
@@ -840,6 +859,7 @@ def _help_text() -> str:
   SYSTEM:
     status                  System health + model tiers
     digest [N]              Recent activity log
+    monitor [--check]       System integrity check + self-healing
     upgrade [--check]       Safe deploy (blue-green)
     panel                   Live terminal dashboard
     worker                  Run a worker process

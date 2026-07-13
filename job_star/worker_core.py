@@ -239,6 +239,8 @@ class Worker:
                 cycle += 1
 
                 did_work = await self.run_once()
+                # Heartbeat every loop iteration so the monitor knows we're alive
+                await self._heartbeat()
                 if not did_work:
                     if getattr(self, '_draining', False):
                         print(f"  [{self.worker_id}] drain complete — exiting gracefully.", flush=True)
