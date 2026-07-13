@@ -149,13 +149,26 @@ class PRExecutor(DefaultExecutor):
         os.makedirs(self.worktree_dir, exist_ok=True)
         worktree_path = os.path.join(self.worktree_dir, branch.replace("/", "_"))
 
-        # Validate any existing directory: it must be a real git worktree.
-        if os.path.exists(worktree_path):
-            git_file = os.path.join(worktree_path, ".git")
+        def _is_valid_worktree(path: str) -> bool:
+            if not os.path.isdir(path):
+                return False
+            git_file = os.path.join(path, ".git")
             if not os.path.isfile(git_file):
-                # Corrupt or stale directory — remove it and recreate.
-                import shutil
-                shutil.rmtree(worktree_path)
+                return False
+            # Check gitdir points to a real metadata dir
+            gitdir = None
+            try:
+                with open(git_file) as f:
+                    gitdir = f.read().strip().replace("gitdir: ", "")
+            except Exception:
+                return False
+            return gitdir and os.path.isdir(gitdir)
+
+        # Validate any existing directory: it must be a real git worktree.
+        if os.path.exists(worktree_path) and not _is_valid_worktree(worktree_path):
+            # Corrupt or stale directory — remove it and recreate.
+            import shutil
+            shutil.rmtree(worktree_path)
 
         if os.path.exists(worktree_path):
             # Reuse existing worktree — make sure branch exists and switch.
