@@ -37,7 +37,7 @@ from .gatehouse import check_health
 class Thresholds:
     # Runaway loop detection
     MAX_STEPS_PER_GOAL = 60         # a goal with >60 steps is likely looping
-    MAX_STEPS_PER_HOUR = 8          # >8 steps completed in 1 hour = loop
+    MAX_STEPS_PER_HOUR = 20         # >20 steps completed in 1 hour = loop
     MAX_DUPLICATE_STEP_TITLES = 5   # same title >5 times = duplicate work
 
     # Orphan reaping
