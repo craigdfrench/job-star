@@ -1,7 +1,7 @@
 # Job-Star Handoff Document
 
-## Date: July 11, 2026
-## Session: Bootstrap + Integration + Gateway-Aware Routing + Cost-Tier Protection
+## Date: July 13, 2026
+## Session: Check-In System + Safe Upgrade Process + Blue-Green Deployment
 
 ---
 
@@ -13,9 +13,134 @@ The core philosophy: **constrained, supervised, goal-oriented AI with situationa
 
 ---
 
-## 2. Current State Summary
+## 2. What Changed This Session
 
-### 2.1 Bootstrap Components (Complete)
+### 2.1 Check-In System (New)
+
+Structured two-way progress dialogue between job-star and the user. See `docs/check-ins.md` for full documentation.
+
+**Four types:**
+- 📊 **Progress** — after every N completed steps (default 3, configurable per goal)
+- ❓ **Clarification** — when a step fails 2+ times
+- 🏁 **Milestone** — on demand, for phase reviews
+- ✅ **Completion** — when all steps done, replaces auto-complete (user must accept)
+
+**Key files:**
+
+| File | Purpose |
+|------|---------|
+| `job_star/checkin/__init__.py` | Models: `CheckIn`, `CheckInType`, `CheckInStatus`, `CheckInQuestion` |
+| `job_star/checkin/engine.py` | `CheckInEngine`: AI generation, trigger logic, response processing, DB CRUD |
+| `job_star/orchestrator.py` | Triggers check-ins after step completion, failure, and goal completion |
+| `job_star/cli.py` | `checkin` command: list, show, pending, create, respond |
+| `job_star/api/routes.py` | API endpoints: `GET/POST /check-ins`, `POST /check-ins/{id}/respond` |
+
+**How it works:**
+1. Trigger detected (step count, failure, all-done) → AI generates structured check-in
+2. Check-in saved to Postgres, event published to SSE bus
+3. User responds via CLI or API with answers + free-text feedback
+4. System processes response: accept → goal completed, reject → goal stays open
+5. Decision logged in decisions table with shadow paths
+
+**Verified end-to-end:** AI generated a progress check-in for the Feynman learning goal that summarized the goal, suggested next steps, and asked "Which Feynman-inspired practice would you like to start with?" with 4 options. User responded via API → system processed the decision.
+
+### 2.2 Safe Upgrade Process (New)
+
+Replaces the previous "edit files and hope" approach with a structured 5-stage process. See `UPGRADE.md` for full documentation.
+
+**The upgrade tool:**
+```bash
+python3 -m job_star upgrade           # Full upgrade
+python3 -m job_star upgrade --check    # Pre-flight only (dry run)
+python3 -m job_star upgrade --reap     # Reap orphaned steps only
+```
+
+**5 stages:**
+1. **Pre-flight** — syntax check, import check, git status, orphan detection, DB connectivity
+2. **Reap** — reset stale `in_progress` steps to `pending` (orphaned by crashed workers)
+3. **Migrate** — apply versioned DB migrations from `sql/migrations/`
+4. **Restart** — blue-green rolling restart (one worker at a time, zero downtime)
+5. **Verify** — health endpoint + DB check + automatic rollback on failure
+
+**Key files:**
+
+| File | Purpose |
+|------|---------|
+| `job_star/upgrade.py` | The upgrade tool: pre-flight, reap, migrate, restart, verify, rollback |
+| `UPGRADE.md` | Full upgrade documentation |
+| `sql/migrations/` | Versioned migration files (`001_*.sql`, `002_*.sql`, ...) |
+
+### 2.3 Blue-Green Deployment (New)
+
+Workers are restarted one at a time — never all at once. Zero downtime.
+
+**How it works:**
+1. `worker_registry` table tracks all active workers (worker_id, generation, draining, heartbeat)
+2. Workers register on startup, send heartbeats each loop, check `draining` flag
+3. Upgrade tool sets `draining=TRUE` for one worker via DB
+4. Worker sees drain signal → finishes current step → exits gracefully
+5. systemctl restarts with new code → new worker registers
+6. Other workers keep running throughout
+
+**Key files:**
+
+| File | Purpose |
+|------|---------|
+| `job_star/worker_core.py` | `_register()`, `_heartbeat()`, `_check_drain_signal()`, `_unregister()`, SIGTERM handler |
+| `job_star/upgrade.py` | `rolling_restart_worker()`, `signal_worker_drain()`, `wait_for_worker_drain()` |
+| DB table | `worker_registry` (worker_id, generation, draining, last_heartbeat, current_step_id) |
+
+**systemd changes:**
+- `TimeoutStopSec=120` added to all worker services (2 min to drain before SIGKILL)
+- `JOB_STAR_GENERATION=1` added to all worker services
+
+### 2.4 Health Check Endpoint (New)
+
+`GET /health` — no auth required. Returns 200 (healthy) or 503 (unhealthy).
+
+Checks: database (goals, steps, orphans), gateway, workers (from registry), schema version.
+
+Used by the upgrade tool's verification stage and available for external monitoring.
+
+**Key file:** `job_star/api/app.py` — comprehensive `/health` endpoint replacing the old stub.
+
+### 2.5 Automatic Rollback (New)
+
+Before each upgrade, the current git commit hash is saved. If verification fails:
+1. `git reset --hard` to the previous commit
+2. All services restarted with old code
+3. Logged to audit trail as `system_rollback`
+4. Exit code 3 (rollback succeeded) or 4 (rollback failed — manual intervention)
+
+### 2.6 Schema Version Tracking (New)
+
+- `schema_migrations` table tracks applied migration versions
+- `sql/migrations/` directory with numbered files
+- Migrations 001 (initial schema) and 002 (check-ins + worker registry + schema versioning) marked as applied
+- Future migrations: drop a new `003_*.sql` file, run upgrade
+
+### 2.7 Graceful Worker Shutdown (New)
+
+Workers now handle SIGTERM:
+1. SIGTERM → `_draining = True`
+2. Finish current step (AI call completes, result saved to DB)
+3. Stop claiming new steps
+4. Exit cleanly (unregister from `worker_registry`, close DB pool)
+5. systemd restarts with new code
+
+### 2.8 Documentation (New)
+
+| File | Purpose |
+|------|---------|
+| `UPGRADE.md` | Full upgrade guide: stages, blue-green, rollback, schema versioning, manual recovery |
+| `docs/check-ins.md` | Check-in system: types, lifecycle, CLI/API usage, triggers, schema |
+| `docs/feynman-thinking-plan.md` | 70-day daily practice plan for learning Feynman's thinking methods |
+
+---
+
+## 3. Current State Summary
+
+### 3.1 Bootstrap Components (Complete)
 
 | # | Component | Status |
 |---|-----------|--------|
@@ -33,355 +158,164 @@ The core philosophy: **constrained, supervised, goal-oriented AI with situationa
 | 12 | Web Intake | ✅ |
 | 13 | Telegram Integration | ✅ |
 
-### 2.2 Integration (Complete)
+### 3.2 New This Session
 
-Unified Python orchestration package (`job_star/`) wires the core loop:
+| # | Component | Status |
+|---|-----------|--------|
+| 14 | Check-In System | ✅ |
+| 15 | Upgrade Tool | ✅ |
+| 16 | Blue-Green Deployment | ✅ |
+| 17 | Health Endpoint | ✅ |
+| 18 | Automatic Rollback | ✅ |
+| 19 | Schema Version Tracking | ✅ |
+| 20 | Graceful Worker Shutdown | ✅ |
+| 21 | Orphan Step Reaper | ✅ |
 
-```
-Intake → Triage → Conflict Check → Goal Registry (Postgres)
-→ Router → Supervisor → Gatehouse AI → Result → Follow-up
-```
+### 3.3 Tests
 
-### 2.3 Gateway-Aware Routing + Cost-Tier Protection + x_gatehouse (Added This Session)
+**33/33 passing** (27 original + 6 new check-in tests)
 
-Added cost-tier protection so job-star never silently falls back to expensive models, plus **real-time pricing/quota parsing from the dev server's `x_gatehouse` response metadata**.
-
-**Key files:**
-
-| File | Purpose |
-|------|---------|
-| `job_star/gatehouse/monitor.py` | Model availability, quota hold, circuit breaker, cost tier mapping, `x_gatehouse` parsing |
-| `job_star/gatehouse/client.py` | Extracts `usage.x_gatehouse` from responses into `ExecutionResult.x_gatehouse` |
-| `job_star/scheduler.py` | Deferred jobs, retry after quota hold, fallback resolution |
-| `job_star/router/engine.py` | Live model routing with cost-tier protection |
-| `job_star/orchestrator.py` | Multi-attempt execution with fallback; feeds `x_gatehouse` back to monitor |
-| `job_star/idle/loop.py` | Uses gateway monitor for idle work; feeds `x_gatehouse` back |
-| `job_star/models.py` | `ExecutionResult.x_gatehouse` field added |
-
-**x_gatehouse parsing (the real pricing source):**
-The dev server now includes `usage.x_gatehouse` in every chat completion response. `GatewayMonitor.record_success()` parses it and updates model state with:
-- `cost_class` (e.g. `included_quota`, `retail`) — authoritative tier source
-- `routing_advice` (e.g. `harvest`, `switch`) — gatehouse's recommendation
-- `quota_windows[]` — per-pool `remaining_pct`, `resets_at`, `hours_until_reset`
-- `retail_value_this_request` — market value of the request
-- `reason` — human-readable explanation
-
-`tier_for(model_id)` prefers observed `cost_class` over the static config/heuristics. `_cost_class_to_tier()` maps `included_quota`/`promotional_free`/`zero_rated` → `FREE`, `retail`/`paid` → `PREMIUM`.
-
-If any `quota_window.remaining_pct <= 0`, the model is marked unavailable and enters a quota hold until the soonest `resets_at` (instead of a blind 3-hour wait).
-
-`pick_fallback()` now boosts models with `routing_advice == "harvest"` and penalizes `"switch"`.
-
-**Verified with `kimi-k2-7`:** `cost_class=included_quota`, `routing_advice=harvest`, `reason="$0-rated - doesn't consume dollar quota, harvest free retail value"`, `tier_for=FREE`, `is_expensive=False`. Quota windows: `windsurf_daily=94%`, `windsurf_weekly=8%` (resets 2026-07-12T08:00:00Z).
-
-**Cost tiers (from x_gatehouse cost_class, then gatehouse config, then heuristics):**
-- `FREE` — `included_quota`, `promotional_free`, `zero_rated`; `ollama/*`, `glm-5-2*`, `deepseek-ai/deepseek-v4-*`, `kimi-k2-7` (zero-rated)
-- `CHEAP` — `gemini-3-5-flash-*`, `deepseek-v4` (non-nvidia)
-- `STANDARD` — `claude-sonnet-5*` (reasoning variants), `claude-sonnet-4*` (only with explicit `allow_expensive=True`)
-- `PREMIUM` — `claude-opus-*`, `claude-5-fable-*` (only with explicit `allow_expensive=True`)
-
-**Routing rules:**
-- By default, only `FREE` and `CHEAP` models are eligible for routing and fallback.
-- A model override only works if `allow_expensive=True` OR the model is free/cheap.
-- The idle loop never uses expensive models.
-- `GatewayMonitor` tracks consecutive failures and puts a model in quota hold after quota/availability errors.
-- Quota hold duration is now driven by `resets_at` from `x_gatehouse` when available.
-
-### 2.4 Real Work (Ongoing)
-
-1. **Google Takeout verification** — ✅
-2. **YouTube watch history analysis** — ✅
-3. **Image extraction** — ✅
-4. **AI vision tagging** — **running**, tagger now has 3-hour quota holds
-5. **Home Assistant monitoring** — blocked on token auth
-6. **Wire job-star components together** — active, 30% complete, now using `deepseek-v4-flash` for routing
-
----
-
-## 3. File Locations
-
-```
-/home/craig/job-star/job-star/
-├── package.json
-├── tsconfig.json
-├── pyproject.toml
-├── sql/
-│   └── schema.sql
-├── src/                      # TypeScript CLI
-├── job_star/                 # Unified Python orchestration package
-│   ├── __init__.py
-│   ├── __main__.py
-│   ├── models.py
-│   ├── db.py
-│   ├── orchestrator.py
-│   ├── cli.py
-│   ├── scheduler.py
-│   ├── triage/
-│   ├── router/
-│   ├── gatehouse/
-│   │   ├── __init__.py
-│   │   ├── client.py
-│   │   └── monitor.py
-│   ├── supervisor/
-│   ├── conflict/
-│   ├── intake/
-│   ├── followup/
-│   └── idle/
-├── tests/
-│   └── test_integration.py
-├── generated/                 # AI-generated component code
-├── job-star-design.md
-└── job-star-bootstrap.md
-```
-
-### 3.2 Database
+### 3.4 Database
 
 - **Container:** `job-star-db` (running)
 - **Connection:** `postgresql://jobstar:jobstar@localhost:5432/job_star`
-- **Goals:** 20 (3 active, 17 completed)
+- **Tables:** goals, goal_steps, audit_trail, goal_conflicts, decisions, job_queue, events, experts, check_ins, schema_migrations, worker_registry
+- **Schema version:** 2
+- **Goals:** 68 (32 active, 35 completed, 1 blocked)
 
-### 3.3 AI Gateway
+### 3.5 Services
 
-- **Dev (now the default for both pi and job-star):** `http://100.64.158.87:8090/v1` — the local gatehouse build at `/home/craig/gatehouse-ai/`, PID on port 8090. Model IDs are **unprefixed** (`glm-5-2`, `kimi-k2-7`, `deepseek-v4-flash`).
-- **Production:** `http://gatehouse-ai.craigdfrench.com/v1` → Caddy → `localhost:18080` → systemd gatehouse (`/etc/gatehouse/config.json`). Model IDs are **`ollama/`-prefixed** (`ollama/glm-5.2`).
-- **`ai.craigdfrench.com`** is a *different* gateway entirely (689 models, `cognition/`/`nvidia/`/`together/`/`openrouter/` prefixed IDs) — not used by job-star.
+| Service | Status | Port |
+|---------|--------|------|
+| job-star-api | active | 8003 |
+| job-star-worker | active | — |
+| job-star-worker-gatehouse | active | — |
+| job-star-worker-research | active | — |
+| job-star-panel | active (tmux) | — |
 
-**Why dev:** the user is actively working on gatehouse enhancements (pricing/cost-class fields) on the dev build. Pointing job-star and pi at dev lets us test the new fields as they land.
+### 3.6 Worker Registry
 
-**Caveat:** the dev instance has inconsistent routing — some models in `/v1/models` return `model_not_found` when called (e.g. `gemini-3-flash-preview`, `deepseek-v4-flash`, `kimi-k2.7-code`). Working models on dev: `glm-5-2`, `glm-5.2`, `glm-5-2-none`, `kimi-k2-7`, `kimi-k2.6`, `kimi-k2-6`.
+3 workers registered: nexus, gatehouse-ai-expert, research-harvester — all generation 1, none draining.
 
-### 3.4 Current Live Model Situation
+### 3.7 Health Endpoint
 
-- `ollama/*` models (including `ollama/glm-5.2` and `ollama/gemini-3-flash-preview`) are listed but return 404/401 when called.
-- `claude-5-fable-*` is `quota_bearing` in gatehouse config and is **treated as PREMIUM, not used by default**.
-- `claude-sonnet-5*` (high/low/medium/max/xhigh) are **treated as STANDARD, not used by default**.
-- `deepseek-ai/deepseek-v4-flash` is `included_unlimited` from nvidia and is **treated as FREE**.
-- `glm-5-2` is `promotional_free` and is **treated as FREE**.
+```
+GET /health → 200
+  database: healthy (68 goals, 37 pending, 0 orphans)
+  gateway: healthy
+  workers: 3 active
+  schema_version: 2
+```
 
 ---
 
 ## 4. How to Run
 
-### Python CLI
+### CLI
 
 ```bash
-export GATEHOUSE_API_URL="http://gatehouse-ai.craigdfrench.com/v1"
-
-cd /home/craig/job-star/job-star
-
+# Goal management
 python3 -m job_star add "title" --desc "description" --urgency soon
 python3 -m job_star list
 python3 -m job_star show <id>
 python3 -m job_star work <id>
-python3 -m job_star work <id> --model glm-5-2  # override model if allowed
 python3 -m job_star complete <id>
-python3 -m job_star digest 50
-python3 -m job_star conflicts
 python3 -m job_star status
-python3 -m job_star idle --cycles 1
+python3 -m job_star digest [N]
+
+# Check-ins
+python3 -m job_star checkin list [--goal <id>] [--status pending]
+python3 -m job_star checkin pending
+python3 -m job_star checkin show <id>
+python3 -m job_star checkin create <goal-id> --type progress|clarification|milestone|completion
+python3 -m job_star checkin respond <id> --answer "1" --feedback "text"
+
+# Upgrade
+python3 -m job_star upgrade           # Full upgrade (blue-green)
+python3 -m job_star upgrade --check  # Pre-flight check
+python3 -m job_star upgrade --reap   # Reap orphaned steps
+
+# Workers
+python3 -m job_star worker --interval 15
+JOB_STAR_EXPERT=gatehouse-ai python3 -m job_star worker  # expert worker
+```
+
+### API
+
+```bash
+# Health (no auth)
+curl http://localhost:8003/health
+
+# Goals (auth required)
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8003/api/v1/goals
+
+# Check-ins
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8003/api/v1/check-ins
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"type": "progress"}' \
+  http://localhost:8003/api/v1/goals/<id>/check-in
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"response": "Looks good", "decisions": [{"question_id": "abc", "answer": "Accept"}]}' \
+  http://localhost:8003/api/v1/check-ins/<id>/respond
 ```
 
 ### Tests
-
 ```bash
 python3 -m pytest tests/test_integration.py -v
-# 22 tests, all passing
-```
-
-### Image Tagger
-
-```bash
-# Check status
-ps aux | grep image_tagger
-tail -5 /tmp/image_tagger_prod.log
-
-# Tagger pauses 3 hours on quota/availability errors
-# Restart from checkpoint if needed
-python3 /tmp/image_tagger_prod.py
+# 33 tests, all passing
 ```
 
 ---
 
-## 5. What Works End-to-End
+## 5. Documentation Index
 
-1. **Intake** — triage + duplicate detection + goal creation
-2. **Live routing** — fetches available models from gatehouse, falls back to free/cheap
-3. **Cost protection** — expensive models never used as silent fallback
-4. **Execution** — tries up to 3 allowed models on failure
-5. **Quota hold tracking** — 3-hour hold for unavailable models
-6. **Supervision** — budget, retry, path consistency checks
-7. **Conflict detection** — duplicates, contradictions, resource, tension
-8. **Follow-up** — interrupt/batch/silent classification
-9. **Idle loop** — opportunistic execution with gateway awareness
-10. **Audit trail** — all actions logged in Postgres
-
----
-
-## 6. Immediate Next Steps
-
-### 6.1 Investigate Ollama Backend (Priority 1)
-
-`ollama/*` models are listed but return 404/401. This is a gateway/ollama backend routing issue. The non-ollama `deepseek-v4-flash` is working as a fallback.
-
-### 6.2 Investigate `deepseek-v4-flash` Quota (Priority 2)
-
-`deepseek-v4-flash` is now working and cheap. Monitor it with the `GatewayMonitor` and `status` command. If it hits quota, the system will fall back to other free/cheap models.
-
-### 6.3 Add `--allow-expensive` Flag to CLI (Priority 3)
-
-The `work` command should accept `--allow-expensive` to let users explicitly request premium models like `claude-5-fable-*`.
-
-### 6.4 Wire Rust Supervisor (Priority 4)
-
-Build the generated Rust supervisor as a service and connect it.
-
-### 6.3 Wire Web Intake & Telegram (Priority 5)
-
-Connect the React app and Telegram bot to the Python orchestrator.
-
-### 2.4 Expert Routing + Distributed Workers (Added This Session)
-
-Added **topic ownership** so a custom expert agent owns goals for a specific codebase, and other workers can't touch them.
-
-**Key files:**
-
-| File | Purpose |
-|------|---------|
-| `job_star/executors/__init__.py` | Executor registry: maps expert names to specialized execution backends |
-| `job_star/executors/default.py` | Default executor (generic AI model via gatehouse) |
-| `job_star/executors/gatehouse_ai.py` | **Gatehouse-AI expert** — curated context from README/DESIGN/HANDOFF/docs + codebase structure |
-| `job_star/db.py` | `claim_next_step_any_goal(expert=...)` with worker affinity |
-| `job_star/triage/engine.py` | `EXPERT_KEYWORDS` + `_detect_expert()` — auto-assigns expert at triage |
-| `job_star/models.py` | `Goal.expert` field + `TriageResult.expert` |
-| `sql/schema.sql` | `goals.expert` column + index |
-
-**How it works:**
-1. **Triage detects the expert.** Keywords like "gatehouse", "cog-proxy", "model_costs", "x_gatehouse", "routing_advice" trigger `expert=gatehouse-ai`.
-2. **Goal is owned.** `goals.expert = 'gatehouse-ai'` — only workers with matching affinity can claim its steps.
-3. **Worker affinity.** `JOB_STAR_EXPERT=gatehouse-ai python3 -m job_star worker` only claims goals with that expert. Generic workers (no `JOB_STAR_EXPERT`) only claim `expert IS NULL` goals. `--expert any` claims any.
-4. **Executor dispatch.** The orchestrator's `work_on_goal` looks up the executor for `goal.expert` and dispatches to it. The `GatehouseAIExecutor` injects curated context (README, DESIGN, HANDOFF, codebase structure, key concepts) into the system prompt.
-5. **Delegation.** An expert can create child goals with `expert=NULL` to send sub-tasks to the generic pool.
-
-**Verified:** Added "Fix the cog-proxy /v4/ routing bug in gatehouse-ai" → triage tagged `expert=gatehouse-ai` → generic worker skipped it → expert worker claimed it → `GatehouseAIExecutor` executed steps with curated context using `kimi-k2-7` (free/zero-rated).
-
-**Distributed claiming (done earlier):** `claim_next_step` and `claim_next_step_any_goal` use `FOR UPDATE SKIP LOCKED` so multiple machines pull from the shared Postgres queue without colliding. `JOB_STAR_WORKER=<name>` identifies each worker in audit logs.
-
-**First expert: gatehouse-ai developer.** Curated from local docs (`/home/craig/gatehouse-ai/README.md`, `DESIGN.md`, `HANDOFF.md`, `docs/`, `config.sample.json`) + codebase structure (`internal/` packages) + key concepts (providers, model_costs, x_gatehouse, endpoints, two instances). Devin wiki URL (`https://app.devin.ai/org/craigdfrench/wiki/craigdfrench/gatehouse-ai?branch=main`) is referenced for future integration once API access is available.
-
-**PR-based execution with test feedback (PRExecutor):** The gatehouse-ai expert (and any expert with a `repo_path` + `test_command`) uses the `PRExecutor`, which closes the loop between code generation and verification:
-1. AI generates code → parsed into file blocks (`## File: path` + fenced code)
-2. Files written to the repo working tree (supervisor checks paths within repo)
-3. Test command run (`go test ./...` for gatehouse-ai)
-4. If tests fail → failure output fed back to the AI → retry (up to `max_test_retries`)
-5. When tests pass → commit, push branch, create PR via `gh` CLI
-6. If budget exhausted → commit + create PR with "tests-failing" label for human review
-7. Step result stores `{pr_url, branch, files, test_output}` — the DB tracks linkage, not code
-
-The `experts` table has `repo_path`, `test_command`, `base_branch` columns. gatehouse-ai: `/home/craig/gatehouse-ai`, `go test ./...`, `main`.
-
-**Verified:** PRExecutor test on a temp repo — AI generated Go code, files written to working tree, test command run, failure captured and fed back, retried, committed with "tests failing" message. The loop works end-to-end (only blocked by `go` not being installed in the test env).
-
-**Machine pinning (Option A):** The `experts` table has a `required_machine` column. `gatehouse-ai` is pinned to `DESKTOP-RNK6J72` (the machine with the codebase). The `claim_next_step_any_goal` query enforces this at the SQL level: a worker on the wrong machine cannot claim a machine-pinned expert's goals, even if it sets `JOB_STAR_EXPERT=gatehouse-ai`. The worker reports its machine via `JOB_STAR_MACHINE` or `HOSTNAME`.
-
-**Verified:** A worker on `mac` with `JOB_STAR_EXPERT=gatehouse-ai` got "no work available" (machine mismatch). A worker on `DESKTOP-RNK6J72` claimed the gatehouse-ai goal successfully.
-
-**CLI:** `python3 -m job_star experts` lists registered experts and their machine pinning.
-
-### 6.6 Fix HA Token (Priority 6)
-
-Home Assistant monitoring goal is blocked on token auth.
-
-### 6.7 Continue Image Tagging (Background)
-
-Image tagger is running with 3-hour quota holds.
-
-### 6.8 Integrate Context Gatherer (Priority 7)
-
-Collect files/git/logs before triage and work execution.
+| Document | What it covers |
+|----------|---------------|
+| `job-star-design.md` | Full architecture design document (v0.1) |
+| `job-star-bootstrap.md` | Self-hosting bootstrap plan |
+| `HANDOFF.md` | This file — current state and how to run |
+| `UPGRADE.md` | Safe upgrade process: blue-green, rollback, schema versioning |
+| `docs/check-ins.md` | Check-in system: types, lifecycle, CLI/API, triggers |
+| `docs/feynman-thinking-plan.md` | 70-day Feynman thinking practice plan |
+| `CODE_REVIEW.md` | Code review findings and fixes (from prior session) |
 
 ---
 
-## 7. Key Design Decisions
+## 6. Key Design Decisions (This Session)
 
-1. **Live gateway model list is authoritative.** Static `MODEL_REGISTRY` is a fallback.
-2. **Cost-tier protection is mandatory.** Only `FREE` and `CHEAP` models route by default.
-3. **Failures are model-specific.** One model failing doesn't block the goal; fallback is automatic.
-4. **Quota hold is time-based.** 3-hour default, configurable per `GatewayMonitor`.
-5. **Circuit breaker prevents hammering.** 3 failures → model marked unavailable.
-6. **Python orchestrates, Rust supervises.** Python handles dynamic routing and scheduling; Rust provides hardened constraint enforcement.
-7. **One database, many clients.** Both TypeScript and Python CLI share Postgres.
+1. **Completion check-ins replace auto-complete.** Goals are no longer auto-completed when all steps finish. A completion check-in is created, and the user must accept the result. This ensures quality control on AI-generated work.
 
----
+2. **Check-ins are AI-generated.** The system uses an AI model to summarize progress and formulate specific questions. If AI is unavailable, a fallback check-in is created from raw step data.
 
-## 8. What to Tell the Next Session
+3. **Blue-green via DB drain signals.** Workers poll a `draining` flag in Postgres. The upgrade tool sets it. This works across machines — no signals or API calls needed.
 
-**Cost-tier protection is now in place.** Job-star will never silently fall back to `claude-5-fable-*` or other premium models. It only uses `FREE`/`CHEAP` models unless the user explicitly requests an expensive model with `allow_expensive=True`.
+4. **Additive migrations only.** Never drop or rename. Old code must work with new schema. This enables mixed-version fleets during rolling restarts.
 
-**The `work` command completed a step using `deepseek-v4-flash`** after the Ollama models failed. This confirms the fallback routing works.
+5. **The upgrade tool is version-agnostic.** It doesn't import job-star modules for its core logic (only for syntax/import checks). It works regardless of code version.
 
-**Tests pass:** 22/22 integration tests.
+6. **Health endpoint is unauthenticated.** So the upgrade tool and external monitoring can poll it without credentials. It's on the tailnet boundary.
 
-**Current active goal:** `bd6d62f2` "Wire job-star components together into a running system" is at 30%.
-
-**Next priorities:**
-1. Add `--allow-expensive` CLI flag to `work` command
-2. Investigate Ollama backend 404/401
-3. Investigate `deepseek-v4-flash` quota limits
-4. Wire Rust supervisor
-5. Wire web intake and Telegram
-6. Fix HA token
-7. Continue image tagging
-8. Integrate context gatherer
+7. **Automatic rollback is last resort.** The upgrade verifies health before declaring success. If it fails, it rolls back the code and restarts. This prevents leaving the system in a broken state.
 
 ---
 
-*Generated by job-star session, July 11 2026. The system now protects against expensive silent fallbacks and routes through live gateway model availability.*
+## 7. What to Tell the Next Session
+
+**The system is stable and fully operational.** All 4 services are running, 33 tests pass, the health endpoint reports healthy, 3 workers are registered and heartbeating.
+
+**Key things to know:**
+- To modify job-star safely: commit changes, then run `python3 -m job_star upgrade`
+- The upgrade tool handles draining, reaping, migrating, restarting, and verifying
+- If something breaks, the upgrade auto-rolls back to the previous git commit
+- Check-ins are now automatically triggered after step completion and at goal completion
+- The `/health` endpoint shows full system status
+- Documentation is in `UPGRADE.md` and `docs/check-ins.md`
+
+**Git commits this session:**
+- `bf017c6` — Check-in system + upgrade tool + graceful worker shutdown
+- `c84f5d3` — Blue-green deployment + health endpoint + schema versioning + auto-rollback
+- `bdfba2f` — Fix missing import + remove old DRAIN section + fix pool management
 
 ---
 
-## 9. Code Review Fixes (Added This Session)
-
-A structured code review was performed using a 3-model debate format (prosecutor → defender → arbitrator) via glm-5-2, then re-run with claude-opus-4-8-max as arbitrator. 24 findings debated, 8 upheld, 15 partially upheld, 1 dismissed. Full report: `CODE_REVIEW.md`.
-
-### Fixes Applied
-
-1. **PRExecutor uses git worktree instead of checkout (critical)** — `_ensure_branch` now creates an isolated `git worktree add` in `/tmp/job-star-worktrees/` instead of `git checkout` on the user's primary working tree. This prevents clobbering uncommitted changes. Worktree is cleaned up in `try/finally`.
-
-2. **Router fails fast when gateway is down (critical)** — When `gateway_monitor` is provided and returns no candidates (gateway unreachable), the router returns `RoutingDecision(model="", reason="gateway unreachable")` instead of falling back to static `MODEL_REGISTRY`. The static models are also served through the gateway, so the fallback was unexecutable.
-
-3. **Supervisor budget is DB-backed (major)** — `BudgetTracker.check_budget_db()` queries `SUM(input_tokens + output_tokens)` from `goal_steps` so budget persists across process restarts. `check_before_execute` is now async and uses the DB-backed check. In-memory dict is a cache only.
-
-4. **Conflict detection is incremental + dedup (major)** — `detect_conflicts(incremental_goal_id=...)` checks only the new goal vs existing (O(n) not O(n²)). Intake uses this. Duplicate conflict rows prevented by checking existing rows before insert + a unique index `idx_conflicts_unique` on `(LEAST(a,b), GREATEST(a,b), conflict_type)`.
-
-5. **work_on_goal retry loop fixed (minor but real bug)** — The ternary `model_override if attempts == 0 else None` meant the fallback model was never actually passed to `executor.execute()`. Fixed: `model_override` is now passed on every attempt, and is set to the fallback model after a failure.
-
-6. **FollowUpEngine.batch has max size + auto-flush (major)** — `max_batch_size=100` (default). When exceeded, `_flush()` is called, invoking an optional `_on_flush` callback. Prevents unbounded memory growth in long-running workers.
-
-7. **plan_goal __import__ fixed (minor)** — Replaced `__import__("job_star.router", ...)` with a top-level `from .router import route, MODEL_REGISTRY`.
-
-8. **Idle loop redundant update_step_status removed (trivial)** — `claim_next_step_any_goal` already sets in_progress; the second call was a wasted DB roundtrip.
-
-9. **get_pool() handles closed pool (minor)** — Checks `getattr(_pool, '_closed', False)` and recreates the pool if it was closed (fixes test isolation issues).
-
-### Step DAG (depends_on) — Added This Session
-
-- `goal_steps.depends_on UUID[]` column added (migration + schema.sql)
-- `claim_next_step` and `claim_next_step_any_goal` only claim steps whose `depends_on` are all completed
-- `create_step` accepts `depends_on` parameter
-- Tests: `test_step_dag_blocks_unmet_dependency`, `test_step_dag_parallel_steps_no_deps`
-
-### Test Cleanup Fixed (Vikunja #696)
-
-- `clean_db` fixture deletes test goals before AND after each DB-touching test
-- Tests now pass on rerun without manual DB cleanup
-
-### Code Review Skill
-
-The debate format is codified as a skill: `~/.agents/skills/code-review-debate/`
-- `review.py` — configurable 3-model debate harness
-- `SKILL.md` — documentation
-- Arbitrator defaults to `claude-opus-4-8-max` (strongest available)
-- `--infra-context` flag injects deployment facts to prevent false infrastructure claims
-- `format_report.py` — converts JSON results to markdown
-
-**Tests:** 27/27 passing.
+*Generated by job-star session, July 13 2026. The system now upgrades itself safely.*
