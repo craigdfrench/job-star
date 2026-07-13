@@ -48,12 +48,12 @@ async def render_dashboard() -> str:
             FROM goals
         """)
 
-        # Active goals that need attention (0% with no steps, or blocked)
+        # Active goals that need attention (0% with no steps at all, or blocked)
         stuck_goals = await conn.fetch("""
             SELECT g.id, g.title, g.urgency, g.progress
             FROM goals g
             WHERE g.status = 'active'
-              AND NOT EXISTS (SELECT 1 FROM goal_steps s WHERE s.goal_id = g.id AND s.status = 'pending')
+              AND NOT EXISTS (SELECT 1 FROM goal_steps s WHERE s.goal_id = g.id)
               AND g.progress < 1.0
             ORDER BY CASE g.urgency WHEN 'imperative' THEN 0 WHEN 'soon' THEN 1 ELSE 2 END
             LIMIT 5
