@@ -166,6 +166,7 @@
       const requested = g.requested_by ? ` · 👤 ${escapeHtml(g.requested_by)}` : '';
       const stepInfo = g.step_count ? `${g.completed_steps || 0}/${g.step_count} steps` : '';
       const failedInfo = g.failed_steps > 0 ? ` · <span style="color:var(--red)">${g.failed_steps} failed</span>` : '';
+      const reviewLink = g.pending_checkin_id ? `<a href="/checkin/${g.pending_checkin_id}" class="badge" style="background:#1a3a1a;color:var(--green);text-decoration:none;margin-left:auto;">Review →</a>` : '';
 
       return `
         <div class="goal-card">
@@ -175,6 +176,7 @@
             ${domainBadge} ${urgencyBadge} ${statusBadge}
             <span>${pct}%${expert}${requested}</span>
             ${stepInfo ? `<span>${stepInfo}${failedInfo}</span>` : ''}
+            ${reviewLink}
           </div>
           <div class="progress-bar"><div class="progress-fill ${fillClass}" style="width:${pct}%"></div></div>
         </div>

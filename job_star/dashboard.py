@@ -106,6 +106,14 @@ async def render_dashboard() -> str:
         # Gateway health
         gateway_ok = await check_health()
 
+        # Recent activity (last 8 completed steps)
+        recent_steps = await conn.fetch(
+            "SELECT s.title, s.completed_at, g.title as goal_title "
+            "FROM goal_steps s JOIN goals g ON s.goal_id = g.id "
+            "WHERE s.status = 'completed' AND s.completed_at > NOW() - INTERVAL '24 hours' "
+            "ORDER BY s.completed_at DESC LIMIT 8"
+        )
+
     await close_pool()
 
     # ── Build the dashboard ──────────────────────────────────────────
@@ -176,6 +184,23 @@ async def render_dashboard() -> str:
     health_emoji = "✓" if gateway_ok else "✗"
     lines.append(f"  [{health_emoji}] {recent_count} steps today, {cost_str} cost, "
                  f"{active_workers} workers, gateway {'up' if gateway_ok else 'down'}")
+
+    # Recent activity
+    if recent_steps:
+        lines.append("")
+        lines.append("  Recent activity (last 24h):")
+        for s in recent_steps[:6]:
+            age = ""
+            if s['completed_at']:
+                from datetime import timezone
+                # DB timestamps are naive UTC; compare against UTC now
+                delta = datetime.now(timezone.utc).replace(tzinfo=None) - s['completed_at']
+                secs = max(int(delta.total_seconds()), 0)
+                if secs < 3600:
+                    age = f" ({secs//60}m ago)"
+                else:
+                    age = f" ({secs//3600}h ago)"
+            lines.append(f"    \u2713 {s['title'][:40]}{age}")
 
     # Quick commands
     lines.append("")

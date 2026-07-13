@@ -66,6 +66,7 @@ class GoalSummary(BaseModel):
     step_count: int = 0
     completed_steps: int = 0
     failed_steps: int = 0
+    pending_checkin_id: Optional[str] = None
 
 
 class GoalResponse(GoalSummary):

@@ -44,7 +44,7 @@ router = APIRouter()
 _asks: dict[str, dict] = {}
 
 
-def _goal_to_summary(g, step_counts: dict | None = None) -> GoalSummary:
+def _goal_to_summary(g, step_counts: dict | None = None, pending_checkin_id: str | None = None) -> GoalSummary:
     sc = step_counts or {}
     return GoalSummary(
         id=g.id,
@@ -61,6 +61,7 @@ def _goal_to_summary(g, step_counts: dict | None = None) -> GoalSummary:
         step_count=sc.get("total", 0),
         completed_steps=sc.get("completed", 0),
         failed_steps=sc.get("failed", 0),
+        pending_checkin_id=pending_checkin_id,
     )
 
 
@@ -146,8 +147,9 @@ async def list_goals_api(
     urgency_obj = Urgency(urgency) if urgency else None
 
     goals = await list_goals(status=status_obj, domain=domain_obj, urgency=urgency_obj)
-    # Fetch step counts in one query for all goals
+    # Fetch step counts and pending check-ins in bulk for all goals
     counts = {}
+    checkins = {}
     if goals:
         goal_ids = [g.id for g in goals]
         pool = await get_pool()
@@ -162,8 +164,16 @@ async def list_goals_api(
             )
             for r in rows:
                 counts[str(r["goal_id"])] = {"total": r["total"], "completed": r["completed"], "failed": r["failed"]}
+            # Fetch pending (sent) check-ins for these goals
+            ci_rows = await conn.fetch(
+                """SELECT goal_id, id FROM check_ins
+                   WHERE status = 'sent' AND goal_id = ANY($1::uuid[])""",
+                goal_ids,
+            )
+            for r in ci_rows:
+                checkins[str(r["goal_id"])] = str(r["id"])
     return GoalListResponse(
-        goals=[_goal_to_summary(g, counts.get(g.id)) for g in goals],
+        goals=[_goal_to_summary(g, counts.get(g.id), checkins.get(g.id)) for g in goals],
         total=len(goals),
     )
 
