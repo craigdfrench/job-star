@@ -154,6 +154,10 @@ class Worker:
 
         This prevents workers from idling while there are goals that have
         never been started. Planning is lightweight and idempotent.
+
+        Only auto-plans goals that are safe to execute:
+        - coding or infra domain (AI can do code/infra work)
+        - not personal errands that require a human (tax, renewals, phone calls)
         """
         from .db import get_active_goals_with_no_steps
         goals = await get_active_goals_with_no_steps()
@@ -169,6 +173,10 @@ class Worker:
             if not self.expert_any and self.expert and goal.expert != self.expert:
                 continue
             if not self.expert_any and not self.expert and goal.expert:
+                continue
+
+            # Skip personal/admin tasks that AI cannot actually complete
+            if goal.domain.value in ("personal",):
                 continue
 
             print(f"  [{self.worker_id}] planning unstarted goal: {goal.title[:40]}", flush=True)
