@@ -228,6 +228,10 @@ Break this goal into concrete steps."""
                 "reason": pre_check.reason,
                 "violations": pre_check.violations,
             }, goal_id, step.id)
+            # Reset the step to pending so it can be retried later
+            # (e.g., after budget is raised). Leaving it in_progress
+            # would orphan it — no worker can claim an in_progress step.
+            await update_step_status(step.id, StepStatus.PENDING)
             return ExecutionResult(
                 success=False,
                 error=f"Supervisor blocked execution: {pre_check.reason}",

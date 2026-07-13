@@ -37,8 +37,8 @@ class SupervisionResult:
 @dataclass
 class BudgetTracker:
     """Tracks token and cost usage per goal."""
-    max_tokens_per_goal: int = 50_000
-    max_cost_per_goal: float = 1.0
+    max_tokens_per_goal: int = 500_000  # 500K — enough for complex multi-step goals
+    max_cost_per_goal: float = 5.0     # $5 per goal by default
     max_step_retries: int = 3
 
     _goal_tokens: dict[str, int] = field(default_factory=dict)
@@ -169,8 +169,8 @@ class Supervisor:
 
     def __init__(
         self,
-        max_tokens_per_goal: int = 50_000,
-        max_cost_per_goal: float = 1.0,
+        max_tokens_per_goal: int = 500_000,
+        max_cost_per_goal: float = 5.0,
         max_step_retries: int = 3,
     ):
         self.budget = BudgetTracker(
