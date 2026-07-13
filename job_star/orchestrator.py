@@ -302,9 +302,14 @@ Break this goal into concrete steps."""
                 print(f"  All attempts failed.", flush=True)
 
         if not result or not result.success:
-            await update_step_status(step.id, StepStatus.FAILED, model=result.model if result else "none")
+            error = result.error if result else "No model available"
+            await update_step_status(
+                step.id, StepStatus.FAILED,
+                model=result.model if result else "none",
+                result={"error": error},
+            )
             self.supervisor.budget.record_failure(step.id)
-            await self.followup.emit(goal, "step_failed", result.error if result else "No model available", step.id)
+            await self.followup.emit(goal, "step_failed", error, step.id)
             # If a step fails repeatedly, create a clarification check-in
             all_steps = await get_steps(goal_id)
             failed_steps = [s for s in all_steps if s.status == StepStatus.FAILED]
@@ -312,7 +317,7 @@ Break this goal into concrete steps."""
                 try:
                     check_in = await self.checkin_engine.maybe_create_clarification_check_in(
                         goal, all_steps, step=step,
-                        issue=f"Step '{step.title}' failed: {result.error if result else 'unknown'}",
+                        issue=f"Step '{step.title}' failed: {error}",
                     )
                     await audit("clarification_checkin_created", {
                         "check_in_id": check_in.id,

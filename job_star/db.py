@@ -404,8 +404,9 @@ async def update_step_status(step_id: str, status: StepStatus, result: dict | No
             )
         else:
             await conn.execute(
-                "UPDATE goal_steps SET status = $2 WHERE id = $1",
+                "UPDATE goal_steps SET status = $2, result = $3 WHERE id = $1",
                 UUID(step_id), status.value,
+                json.dumps(result) if result else None,
             )
     await audit(f"step_{status.value}", {}, step_id=step_id, model=model,
                 input_tokens=input_tokens, output_tokens=output_tokens, cost=cost)
