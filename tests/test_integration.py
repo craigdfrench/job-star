@@ -612,7 +612,7 @@ async def test_check_in_reject_reopens_goal(clean_db):
 async def test_progress_check_in_trigger(clean_db):
     """Progress check-in should trigger after N completed steps."""
     from job_star.checkin import should_create_progress_check_in, DEFAULT_CHECK_IN_INTERVAL
-    from job_star.db import create_goal, create_step, update_step_status, get_steps, Domain, Urgency, StepStatus
+    from job_star.db import create_goal, create_step, update_step_status, get_steps, update_goal_status, Domain, Urgency, StepStatus
 
     goal = await create_goal(
         "Test: trigger check-in", "test description",
@@ -647,10 +647,47 @@ async def test_progress_check_in_trigger(clean_db):
 
 
 @pytest.mark.asyncio
+async def test_progress_check_in_cooldown(clean_db):
+    """Progress check-ins should respect a minimum cooldown period."""
+    from datetime import datetime, timezone, timedelta
+    from job_star.checkin import should_create_progress_check_in, create_check_in, CheckInType
+    from job_star.db import create_goal, create_step, update_step_status, get_steps, update_goal_status, Domain, Urgency, StepStatus
+
+    goal = await create_goal(
+        "Test: cooldown check-in", "test description",
+        domain=Domain.CODING, urgency=Urgency.SOON, source="test",
+    )
+
+    # Create and complete 5 steps
+    for i in range(5):
+        step = await create_step(goal.id, f"Step {i}", f"desc {i}", i + 1)
+        await update_step_status(step.id, StepStatus.COMPLETED)
+
+    # First check-in should trigger (no previous check-in)
+    steps = await get_steps(goal.id)
+    assert await should_create_progress_check_in(goal, steps)
+
+    # Create a check-in now
+    await create_check_in(goal_id=goal.id, type=CheckInType.PROGRESS,
+                          progress_summary="5 steps done.", questions=[])
+
+    # Complete more steps
+    for i in range(5, 10):
+        step = await create_step(goal.id, f"Step {i}", f"desc {i}", i + 1)
+        await update_step_status(step.id, StepStatus.COMPLETED)
+    steps = await get_steps(goal.id)
+
+    # Should NOT trigger — within cooldown period (check-in was just created)
+    assert not await should_create_progress_check_in(goal, steps)
+
+    await update_goal_status(goal.id, GoalStatus.COMPLETED)
+
+
+@pytest.mark.asyncio
 async def test_completion_check_in_trigger(clean_db):
     """Completion check-in should trigger when all steps are done."""
     from job_star.checkin import should_create_completion_check_in, create_check_in, CheckInType
-    from job_star.db import create_goal, create_step, update_step_status, get_steps, Domain, Urgency, StepStatus
+    from job_star.db import create_goal, create_step, update_step_status, get_steps, update_goal_status, Domain, Urgency, StepStatus
 
     goal = await create_goal(
         "Test: completion trigger", "test description",

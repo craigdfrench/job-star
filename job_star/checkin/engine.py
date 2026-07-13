@@ -24,6 +24,7 @@ from ..router import route
 from . import CheckIn, CheckInType, CheckInStatus, CheckInQuestion
 
 DEFAULT_CHECK_IN_INTERVAL = 3  # steps between progress check-ins
+DEFAULT_CHECK_IN_COOLDOWN_HOURS = 168  # 7 days — minimum time between progress check-ins
 
 
 # ============================================================================
@@ -179,9 +180,14 @@ async def action_check_in(check_in_id: str) -> CheckIn:
 async def should_create_progress_check_in(goal: Goal, steps: list[Step]) -> bool:
     """Determine if a progress check-in should be created.
 
-    Triggers when:
-      - N steps have been completed since the last check-in
-      - Default N = 3, configurable via goal.metadata.check_in_interval
+    Triggers when BOTH:
+      - At least N steps completed since the last check-in (default N=3)
+      - At least cooldown_hours have passed since the last check-in (default 168h = 1 week)
+
+    The cooldown is the dominant constraint for fast-cycling workers.
+    Configurable per goal via metadata:
+      - check_in_interval: step count threshold (default 3)
+      - check_in_cooldown_hours: minimum hours between check-ins (default 168)
     """
     if goal.status != GoalStatus.ACTIVE:
         return False
@@ -190,8 +196,9 @@ async def should_create_progress_check_in(goal: Goal, steps: list[Step]) -> bool
     if not completed:
         return False
 
-    # Check interval from goal metadata
+    # Configurable thresholds
     interval = goal.metadata.get("check_in_interval", DEFAULT_CHECK_IN_INTERVAL)
+    cooldown_hours = goal.metadata.get("check_in_cooldown_hours", DEFAULT_CHECK_IN_COOLDOWN_HOURS)
 
     # Find the last check-in for this goal
     recent_check_ins = await list_check_ins(goal_id=goal.id, limit=1)
@@ -200,11 +207,16 @@ async def should_create_progress_check_in(goal: Goal, steps: list[Step]) -> bool
         return len(completed) >= interval
 
     last = recent_check_ins[0]
-    # Count steps completed AFTER the last check-in was created
     last_created = last.created_at
     if hasattr(last_created, 'tzinfo') and last_created.tzinfo is None:
         last_created = last_created.replace(tzinfo=timezone.utc)
 
+    # Time cooldown: must have passed at least cooldown_hours since last check-in
+    hours_since_last = (datetime.now(timezone.utc) - last_created).total_seconds() / 3600
+    if hours_since_last < cooldown_hours:
+        return False
+
+    # Step count: must have completed at least N new steps since last check-in
     new_completed = [
         s for s in completed
         if s.completed_at and _is_after(s.completed_at, last_created)
