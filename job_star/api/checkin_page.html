@@ -13,7 +13,7 @@
 }
 * { margin:0; padding:0; box-sizing:border-box; }
 body {
-  font-family: 'SF Mono','JetBrains Mono','Fira Code',monospace;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   background: var(--bg); color: var(--text); font-size: 14px; padding: 16px; max-width: 800px; margin: 0 auto;
 }
 h1 { font-size:18px; font-weight:600; margin-bottom:8px; display:flex; align-items:center; gap:8px; }
@@ -25,10 +25,9 @@ h2 { font-size:13px; text-transform:uppercase; letter-spacing:1px; color:var(--d
 .q-item:last-child { border-bottom:none; }
 .q-label { font-weight:600; margin-bottom:4px; }
 .q-options { display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; }
-.q-opt { padding:4px 12px; border:1px solid var(--border); border-radius:4px; cursor:pointer; font-size:12px; }
-.q-opt:hover { border-color:var(--accent); }
-.q-opt.selected { background:var(--accent); border-color:var(--accent); }
-.q-opt.selected { color:#fff; }
+.q-opt { padding:6px 14px; border:1px solid var(--border); border-radius:6px; cursor:pointer; font-size:13px; transition: all 0.15s; }
+.q-opt:hover { border-color:var(--accent); background:#1a2233; }
+.q-opt.selected { background:var(--accent); border-color:var(--accent); color:#fff; }
 .badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600; }
 .b-progress{background:#1a3a1a;color:var(--green)} .b-completion{background:#1a3a1a;color:var(--green)}
 .b-clarification{background:#3a2a1a;color:var(--yellow)} .b-milestone{background:#1a2a3a;color:var(--accent)}
@@ -43,20 +42,29 @@ h2 { font-size:13px; text-transform:uppercase; letter-spacing:1px; color:var(--d
 .input-row { display:flex; gap:8px; margin-top:8px; }
 #chat-input { flex:1; padding:10px; background:var(--card); border:1px solid var(--border); border-radius:6px; color:var(--text); font-family:inherit; font-size:13px; }
 #chat-input:focus { outline:none; border-color:var(--accent); }
-button { padding:8px 16px; border:1px solid var(--border); border-radius:6px; background:var(--card); color:var(--text); cursor:pointer; font-family:inherit; font-size:13px; }
+button { padding:8px 16px; border:1px solid var(--border); border-radius:6px; background:var(--card); color:var(--text); cursor:pointer; font-family:inherit; font-size:13px; transition: all 0.15s; }
 button:hover { border-color:var(--accent); }
 button:disabled { opacity:0.5; cursor:default; }
 .btn-primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+.btn-primary:hover { background:#4a7ddf; }
 .btn-accept { background:var(--green); border-color:var(--green); color:#fff; }
+.btn-accept:hover { background:#3d9b40; }
 .btn-reject { background:var(--red); border-color:var(--red); color:#fff; }
-.actions { margin-top:16px; display:flex; gap:8px; flex-wrap:wrap; }
-#feedback-box { width:100%; padding:10px; background:var(--card); border:1px solid var(--border); border-radius:6px; color:var(--text); font-family:inherit; font-size:13px; margin-top:8px; display:none; }
+.btn-reject:hover { background:#d44545; }
+.btn-draft { background:transparent; border-color:var(--accent); color:var(--accent); }
+.btn-draft:hover { background:#1a2233; }
+.btn-small { padding:4px 10px; font-size:12px; }
+.actions { margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+#feedback-box { width:100%; padding:10px; background:var(--card); border:1px solid var(--border); border-radius:6px; color:var(--text); font-family:inherit; font-size:13px; margin-top:8px; min-height:60px; resize:vertical; }
+#feedback-box:focus { outline:none; border-color:var(--accent); }
 .result { padding:12px; border-radius:8px; margin-top:12px; display:none; }
 .result-success { background:#1a3a1a; border:1px solid var(--green); }
 .result-error { background:#3a1a1a; border:1px solid var(--red); }
 .link { color:var(--accent); text-decoration:none; }
 .link:hover { text-decoration:underline; }
 .dim { color:var(--dim); }
+.hint { font-size:12px; color:var(--dim); margin-top:4px; }
+.selected-display { font-size:12px; color:var(--accent); margin-top:6px; }
 </style>
 </head>
 <body>
@@ -68,12 +76,14 @@ button:disabled { opacity:0.5; cursor:default; }
 <script>
 const API = window.location.origin + '/api/v1';
 const checkInId = window.location.pathname.split('/').pop();
+let checkInData = null;  // cached check-in for submit flow
 
 async function loadCheckIn() {
   try {
     const r = await fetch(`${API}/check-ins/${checkInId}`);
     if (!r.ok) throw new Error(r.status);
     const ci = await r.json();
+    checkInData = ci;
     renderCheckIn(ci);
   } catch(e) {
     document.getElementById('content').innerHTML = '<div class="card"><p style="color:var(--red)">Could not load check-in. It may not exist or the API is down.</p></div>';
@@ -128,29 +138,43 @@ function renderCheckIn(ci) {
     html += '</div>';
   }
 
-  // Chat interface
+  // Chat interface (only if pending)
   if (ci.is_pending) {
     html += `
-      <h2>Discuss with Job-Star</h2>
+      <h2>Discuss with Job-Star AI</h2>
       <div class="card">
         <div id="chat"></div>
         <div class="input-row">
-          <input id="chat-input" type="text" placeholder="Ask about this check-in, the goal, or what to do..." onkeydown="if(event.key==='Enter')sendChat()">
+          <input id="chat-input" type="text" placeholder="Ask about this check-in, or ask the AI to help you decide..." onkeydown="if(event.key==='Enter')sendChat()">
           <button onclick="sendChat()" id="chat-btn">Send</button>
         </div>
+        <div class="actions" style="margin-top:10px;">
+          <button class="btn-draft btn-small" onclick="draftResponseWithAI()" id="draft-btn">✍️ Draft my response with AI</button>
+        </div>
+        <p class="hint">The AI can help you think through the check-in and draft a structured response. Edit the draft before submitting.</p>
       </div>
     `;
 
-    // Response actions
+    // Response section
     html += `<h2>Your Response</h2><div class="card">`;
-    html += `<textarea id="feedback-box" placeholder="Optional: add feedback for job-star..."></textarea>`;
+    html += `<p class="dim" style="margin-bottom:8px;">Add optional feedback or context for job-star:</p>`;
+    html += `<textarea id="feedback-box" placeholder="Type your feedback here, or click 'Draft my response with AI' above to have the AI help you..."></textarea>`;
+
+    // Submit buttons
     html += `<div class="actions">`;
+
     if (ci.type === 'completion') {
       html += `<button class="btn-accept" onclick="submitResponse('Accept')">✓ Accept</button>`;
       html += `<button class="btn-reject" onclick="submitResponse('Needs revision')">✗ Needs Revision</button>`;
+    } else if (ci.questions && ci.questions.some(q => q.options && q.options.length > 0)) {
+      // Choice questions — submit sends the selected options
+      html += `<button class="btn-primary" onclick="submitResponse('')">📤 Submit Selection</button>`;
+      html += `<p class="hint" id="selection-hint">Select an option above, then click Submit Selection.</p>`;
     } else {
-      html += `<button class="btn-primary" onclick="submitResponse('')">Submit Response</button>`;
+      // Text/open-ended questions
+      html += `<button class="btn-primary" onclick="submitResponse('')">📤 Submit Response</button>`;
     }
+
     html += `</div></div>`;
   } else if (ci.response) {
     html += `<h2>Your Response</h2><div class="card summary">${esc(ci.response)}</div>`;
@@ -161,14 +185,20 @@ function renderCheckIn(ci) {
 
   // Initialize chat
   if (ci.is_pending) {
-    addSystemMessage('Ask me anything about this check-in. I can explain the progress, the questions, or help you decide.');
+    addSystemMessage('Ask me anything about this check-in. I can explain the progress, the questions, or help you decide what to do.');
   }
 }
 
 function selectOpt(el) {
-  // Deselect siblings
   el.parentElement.querySelectorAll('.q-opt').forEach(s => s.classList.remove('selected'));
   el.classList.add('selected');
+
+  // Update the selection hint
+  const hint = document.getElementById('selection-hint');
+  if (hint) {
+    hint.textContent = `Will submit: "${el.dataset.val}"`;
+    hint.style.color = 'var(--accent)';
+  }
 }
 
 async function sendChat() {
@@ -200,26 +230,68 @@ async function sendChat() {
   input.focus();
 }
 
+async function draftResponseWithAI() {
+  const draftBtn = document.getElementById('draft-btn');
+  const feedbackBox = document.getElementById('feedback-box');
+  draftBtn.disabled = true;
+  draftBtn.textContent = '✍️ Drafting...';
+
+  // Ask the AI to draft a structured response based on the check-in context
+  const draftPrompt = 'Help me draft a clear, structured response to this check-in. Consider the progress summary, results, and questions. Write a concise response I can send as my feedback. If there are questions with options, recommend which option to choose and why. Format it as 2-3 sentences.';
+
+  try {
+    const r = await fetch(`${API}/check-ins/${checkInId}/discuss`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({message: draftPrompt})
+    });
+    if (!r.ok) throw new Error(r.status);
+    const data = await r.json();
+
+    // Put the AI's draft into the feedback box for the user to edit
+    if (feedbackBox) {
+      feedbackBox.value = data.response;
+      feedbackBox.focus();
+      feedbackBox.scrollIntoView({behavior: 'smooth', block: 'center'});
+    }
+    addAIMessage('I drafted a response for you in the feedback box below. Edit it as you see fit, then submit.');
+  } catch(e) {
+    addSystemMessage('Could not draft a response. Try typing your response manually.');
+  }
+
+  draftBtn.disabled = false;
+  draftBtn.textContent = '✍️ Draft my response with AI';
+}
+
 async function submitResponse(answer) {
-  const feedback = document.getElementById('feedback-box').value.trim();
+  const feedback = document.getElementById('feedback-box')?.value.trim() || '';
   const decisions = [];
 
-  // Collect selected options
+  // Collect selected options from choice questions
   document.querySelectorAll('.q-opt.selected').forEach(el => {
     decisions.push({question_id: el.dataset.qid, answer: el.dataset.val});
   });
 
-  // If an explicit answer was given (accept/reject), find the approval question
+  // If an explicit answer was given (accept/reject for completion), find the approval question
   if (answer) {
-    // Find approval questions and add the answer
-    const ci = await fetch(`${API}/check-ins/${checkInId}`).then(r => r.json());
-    if (ci.questions) {
-      for (const q of ci.questions) {
+    if (checkInData && checkInData.questions) {
+      for (const q of checkInData.questions) {
         if (q.type === 'approval' && !decisions.find(d => d.question_id === q.id)) {
           decisions.push({question_id: q.id, answer: answer});
         }
       }
     }
+  }
+
+  // Validate: if there are choice questions but no selection, warn
+  const hasChoiceQs = checkInData && checkInData.questions && checkInData.questions.some(q => q.options && q.options.length > 0);
+  if (hasChoiceQs && decisions.length === 0 && !answer) {
+    const hint = document.getElementById('selection-hint');
+    if (hint) {
+      hint.textContent = '⚠️ Please select an option first.';
+      hint.style.color = 'var(--red)';
+    }
+    return;
   }
 
   const body = {response: feedback || answer || 'Submitted via web interface', decisions: decisions};
