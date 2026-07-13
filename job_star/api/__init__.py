@@ -1,0 +1,1 @@
+"""Job-Star API service."""

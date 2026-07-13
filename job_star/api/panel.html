@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Job-Star Panel</title>
+<style>
+  :root {
+    --bg: #0f1117; --card: #1a1d27; --border: #2a2d3a;
+    --text: #e0e0e8; --dim: #6b6f7e; --accent: #5b8def;
+    --green: #4caf50; --red: #ef5350; --yellow: #ffca28; --orange: #ff9800;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: 'SF Mono','JetBrains Mono','Fira Code',monospace;
+    background: var(--bg); color: var(--text); font-size: 13px; padding: 12px;
+  }
+  h1 { font-size:16px; font-weight:600; margin-bottom:12px; display:flex; align-items:center; gap:8px; }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--green); animation:pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  @media (max-width:900px) { .grid { grid-template-columns:1fr; } }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:14px; }
+  .card h2 { font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); margin-bottom:10px; }
+  .goal-row { display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--border); }
+  .goal-row:last-child { border-bottom:none; }
+  .goal-id { color:var(--dim); font-size:11px; width:60px; flex-shrink:0; }
+  .goal-title { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .goal-bar { width:80px; height:6px; background:var(--border); border-radius:3px; flex-shrink:0; overflow:hidden; }
+  .goal-bar-fill { height:100%; background:var(--accent); border-radius:3px; transition:width 0.5s; }
+  .goal-pct { width:36px; text-align:right; color:var(--dim); font-size:11px; flex-shrink:0; }
+  .badge { display:inline-block; padding:1px 6px; border-radius:4px; font-size:10px; font-weight:600; text-transform:uppercase; }
+  .b-active{background:#1a3a1a;color:var(--green)} .b-completed{background:#1a1a2a;color:var(--dim)}
+  .b-blocked{background:#3a1a1a;color:var(--red)} .b-pending{background:#2a2a1a;color:var(--yellow)}
+  .b-in_progress{background:#1a2a3a;color:var(--accent)} .b-failed{background:#3a1a1a;color:var(--red)}
+  .b-queued{background:#2a2a1a;color:var(--orange)} .b-claimed{background:#1a2a3a;color:var(--accent)}
+  .urgency-imperative{color:var(--red)} .urgency-soon{color:var(--yellow)} .urgency-idle-opportunistic{color:var(--green)}
+  .event-row { display:flex; gap:8px; padding:4px 0; border-bottom:1px solid var(--border); font-size:11px; }
+  .event-row:last-child { border-bottom:none; }
+  .event-time { color:var(--dim); width:64px; flex-shrink:0; }
+  .event-type { color:var(--accent); width:140px; flex-shrink:0; }
+  .event-detail { color:var(--dim); flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .stat { display:flex; justify-content:space-between; padding:4px 0; }
+  .stat-label { color:var(--dim); } .stat-value { font-weight:600; }
+  .worker-row { display:flex; align-items:center; gap:8px; padding:4px 0; }
+  .worker-dot { width:6px; height:6px; border-radius:50%; flex-shrink:0; }
+  .refresh-note { color:var(--dim); font-size:10px; margin-top:6px; }
+</style>
+</head>
+<body>
+<h1><span class="dot"></span> Job-Star Panel</h1>
+<div class="grid">
+  <div class="card"><h2>System Status</h2><div id="stats"></div><div class="refresh-note">Auto-refresh: 5s</div></div>
+  <div class="card"><h2>Workers</h2><div id="workers"><span style="color:var(--dim)">Loading…</span></div></div>
+  <div class="card" style="grid-column:1/-1"><h2>Active Goals</h2><div id="goals"><span style="color:var(--dim)">Loading…</span></div></div>
+  <div class="card"><h2>Recent Activity</h2><div id="queue" style="max-height:300px;overflow-y:auto"><span style="color:var(--dim)">Loading…</span></div></div>
+  <div class="card"><h2>Live Events <span id="sse-status" style="float:right;font-size:10px;color:var(--dim)"></span></h2><div id="events" style="max-height:300px;overflow-y:auto"></div></div>
+</div>
+<script>
+const API = window.location.origin + '/api/v1';
+const token = new URLSearchParams(location.search).get('token') || '';
+const headers = {};
+if (token) headers['Authorization'] = 'Bearer ' + token;
+function fmt(s){return s?s.substring(0,8):''}
+function badgeClass(s){return 'b-'+s.replace(/[^a-z_]/g,'')}
+
+async function fetchJSON(path){
+  const r = await fetch(API+path,{headers});
+  if(!r.ok) throw new Error(r.status);
+  return r.json();
+}
+
+async function loadStats(){
+  try{
+    const s=await fetchJSON('/goals?status=active');
+    const all=await fetchJSON('/goals');
+    const active=s.goals||[];
+    document.getElementById('stats').innerHTML=`
+      <div class="stat"><span class="stat-label">Total goals</span><span class="stat-value">${all.total}</span></div>
+      <div class="stat"><span class="stat-label">Active</span><span class="stat-value">${active.length}</span></div>
+      ${['imperative','soon','idle-opportunistic'].map(u=>{
+        const c=active.filter(g=>g.urgency===u).length;
+        return c?`<div class="stat"><span class="stat-label urgency-${u}">● ${u}</span><span class="stat-value">${c}</span></div>`:'';
+      }).join('')}
+    `;
+  }catch(e){document.getElementById('stats').innerHTML='<span style="color:var(--red)">Auth required</span>'}
+}
+
+async function loadGoals(){
+  try{
+    const s=await fetchJSON('/goals?status=active');
+    const goals=s.goals||[];
+    if(!goals.length){document.getElementById('goals').innerHTML='<span style="color:var(--dim)">No active goals</span>';return}
+    document.getElementById('goals').innerHTML=goals.map(g=>`
+      <div class="goal-row">
+        <span class="goal-id">${fmt(g.id)}</span>
+        <span class="goal-title" title="${g.title}">${g.title}</span>
+        <span class="badge ${badgeClass(g.status)}">${g.status}</span>
+        <span class="goal-bar"><span class="goal-bar-fill" style="width:${g.progress*100}%"></span></span>
+        <span class="goal-pct">${Math.round(g.progress*100)}%</span>
+      </div>`).join('');
+  }catch(e){document.getElementById('goals').innerHTML='<span style="color:var(--red)">Auth required</span>'}
+}
+
+async function loadRecent(){
+  try{
+    const r=await fetchJSON('/events/recent?limit=15');
+    const events=r.events||[];
+    if(!events.length){document.getElementById('queue').innerHTML='<span style="color:var(--dim)">No recent activity</span>';return}
+    document.getElementById('queue').innerHTML=events.map(e=>{
+      const t=e.type||'?';
+      const p=e.payload||{};
+      const gid=p.goal_id?fmt(p.goal_id):'-';
+      return `<div class="event-row"><span class="event-type">${t}</span><span class="event-detail">${gid}</span></div>`;
+    }).join('');
+  }catch(e){document.getElementById('queue').innerHTML='<span style="color:var(--dim)">—</span>'}
+}
+
+async function loadWorkers(){
+  try{
+    const r=await fetchJSON('/events/recent?limit=50');
+    const events=r.events||[];
+    const workers=new Map();
+    for(const e of events){
+      const w=(e.payload&&e.payload.worker)||null;
+      if(w)workers.set(w,(workers.get(w)||0)+1);
+    }
+    if(!workers.size){document.getElementById('workers').innerHTML='<div class="worker-row"><span class="worker-dot" style="background:var(--green)"></span>nexus</div>';return}
+    document.getElementById('workers').innerHTML=[...workers.entries()].map(([name,count])=>
+      `<div class="worker-row"><span class="worker-dot" style="background:var(--green)"></span>${name} <span style="color:var(--dim)">(${count})</span></div>`
+    ).join('');
+  }catch(e){document.getElementById('workers').innerHTML='<span style="color:var(--dim)">—</span>'}
+}
+
+// SSE
+let sse;
+function connectSSE(){
+  const url=API+'/events'+(token?'?token='+token:'');
+  try{sse.close()}catch(e){}
+  sse=new EventSource(url);
+  document.getElementById('sse-status').textContent='connecting…';
+  const el=document.getElementById('events');
+  let count=0;
+  sse.onopen=()=>{document.getElementById('sse-status').textContent='live'};
+  sse.onerror=()=>{document.getElementById('sse-status').textContent='reconnecting…'};
+  sse.onmessage=(msg)=>{
+    try{
+      const e=JSON.parse(msg.data);
+      const t=e.type||'?';
+      const p=e.payload||{};
+      const ts=e.ts?new Date(e.ts).toLocaleTimeString():'--:--:--';
+      const detail=p.goal_id?fmt(p.goal_id):(p.question_id?'q:'+fmt(p.question_id):'');
+      const row=document.createElement('div');
+      row.className='event-row';
+      row.innerHTML=`<span class="event-time">${ts}</span><span class="event-type">${t}</span><span class="event-detail">${detail}</span>`;
+      el.insertBefore(row,el.firstChild);
+      if(++count>50)el.removeChild(el.lastChild);
+    }catch(err){}
+  };
+}
+
+loadStats();loadGoals();loadRecent();loadWorkers();
+setInterval(()=>{loadStats();loadGoals();loadRecent();loadWorkers()},5000);
+connectSSE();
+</script>
+</body>
+</html>
