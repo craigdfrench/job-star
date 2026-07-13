@@ -33,6 +33,10 @@
     }
     h1 { margin: 0 0 8px; font-size: 1.6rem; }
     .subtitle { color: var(--muted); margin-bottom: 20px; }
+    .nav { display:flex; gap:16px; padding:8px 0; margin-bottom:16px; border-bottom:1px solid var(--border); }
+    .nav a { color:var(--muted); text-decoration:none; font-size:0.9rem; }
+    .nav a:hover { color:var(--accent); }
+    .nav a.active { color:var(--accent); font-weight:500; }
     .tabs {
       display: flex;
       gap: 8px;
@@ -138,6 +142,10 @@
 </head>
 <body>
   <div class="container">
+    <div class="nav">
+      <a href="/add">+ Add Goal</a>
+      <a href="/checkins" class="active">Check-ins</a>
+    </div>
     <h1>🌟 Job-Star Check-ins</h1>
     <p class="subtitle">Review and respond to your pending check-ins.</p>
 

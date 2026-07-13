@@ -63,11 +63,19 @@ button:disabled { opacity:0.5; cursor:default; }
 .link { color:var(--accent); text-decoration:none; }
 .link:hover { text-decoration:underline; }
 .dim { color:var(--dim); }
+.nav { display:flex; gap:16px; padding:8px 0; margin-bottom:16px; border-bottom:1px solid var(--border); }
+.nav a { color:var(--dim); text-decoration:none; font-size:13px; }
+.nav a:hover { color:var(--accent); }
+.nav a.active { color:var(--accent); font-weight:500; }
 .hint { font-size:12px; color:var(--dim); margin-top:4px; }
 .selected-display { font-size:12px; color:var(--accent); margin-top:6px; }
 </style>
 </head>
 <body>
+<div class="nav">
+  <a href="/add">+ Add Goal</a>
+  <a href="/checkins">Check-ins</a>
+</div>
 <h1><span class="dot" id="status-dot"></span> <span id="title">Loading…</span></h1>
 <div id="content">
   <div class="card"><p class="dim">Fetching check-in details…</p></div>

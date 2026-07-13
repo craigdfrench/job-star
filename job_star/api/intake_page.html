@@ -43,7 +43,11 @@
     .result-success { background: #1a2e1a; border: 1px solid var(--green); }
     .result-error { background: #2e1a1a; border: 1px solid var(--red); }
     .user-badge { display: inline-block; padding: 3px 10px; background: var(--card);
-      border: 1px solid var(--border); border-radius: 12px; font-size: 0.8rem; color: var(--muted); }
+      border: 1px solid var(--border); border-radius: 12px; font-size: 0.8rem; color: var(--green); }
+    .nav { display:flex; gap:16px; padding:8px 0; margin-bottom:20px; border-bottom:1px solid var(--border); }
+    .nav a { color:var(--muted); text-decoration:none; font-size:0.9rem; }
+    .nav a:hover { color:var(--accent); }
+    .nav a.active { color:var(--accent); font-weight:500; }
     .actions { display: flex; gap: 10px; margin-top: 20px; }
     .link { color: var(--accent); text-decoration: none; }
     .link:hover { text-decoration: underline; }
@@ -51,6 +55,10 @@
 </head>
 <body>
   <div class="container">
+    <div class="nav">
+      <a href="/add" class="active">+ Add Goal</a>
+      <a href="/checkins">Check-ins</a>
+    </div>
     <h1>🌟 Job-Star — Add a Goal</h1>
     <p class="subtitle">What do you need done? Job-Star will break it into steps and work on it.</p>
     <div id="user-info" style="margin-bottom: 16px;"></div>
@@ -100,10 +108,18 @@
 
     async function loadUser() {
       try {
-        const r = await fetch(`${API}/goals`, { headers: { 'Authorization': 'Bearer ' + (document.cookie.match(/job_star_token=([^;]+)/)||[])[1] || '' } });
-        // If we can reach the API, we're authenticated via Tailscale
-        const info = document.getElementById('user-info');
-        info.innerHTML = '<span class="user-badge">Authenticated via Tailscale</span>';
+        const r = await fetch(`${API}/whoami`);
+        if (r.ok) {
+          const data = await r.json();
+          const info = document.getElementById('user-info');
+          if (data.email) {
+            info.innerHTML = `<span class="user-badge">👤 ${escapeHtml(data.email)}</span>`;
+          } else if (data.authenticated) {
+            info.innerHTML = '<span class="user-badge">Authenticated via Tailscale</span>';
+          } else {
+            info.innerHTML = '<span class="user-badge" style="color:var(--red)">⚠ Not authenticated — goals will be anonymous</span>';
+          }
+        }
       } catch(e) {
         // Not critical — form still works
       }

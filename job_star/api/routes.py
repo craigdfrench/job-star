@@ -79,22 +79,48 @@ async def _goal_with_steps(goal_id: str) -> dict:
     }
 
 
+@router.get("/whoami")
+async def whoami(user=Depends(get_current_user)):
+    """Return the authenticated user's identity (Tailscale email).
+
+    Used by web pages to show who is logged in.
+    """
+    return {"authenticated": True, "email": user.email}
+
+
 @router.post("/intake", response_model=GoalSummary, status_code=status.HTTP_201_CREATED)
 async def intake(
     req: IntakeRequest,
     user=Depends(get_current_user),
 ):
-    """Create a new goal from an intake request."""
+    """Create a new goal through the full intake pipeline (triage + duplicate check).
+
+    Unlike calling create_goal directly, this runs the triage engine to
+    auto-assign domain/urgency and detect duplicates. If the request is
+    a duplicate of an existing goal, returns 409 Conflict.
+    """
+    from job_star.intake import intake as do_intake
+    from job_star.models import Domain, Urgency
+
     requested_by = req.requested_by or user.email
-    goal = await create_goal(
+    goal, triage_result = await do_intake(
         title=req.title,
         description=req.description,
-        domain=req.domain,
-        urgency=req.urgency,
         source=req.source,
+        domain_override=Domain(req.domain) if req.domain else None,
+        urgency_override=Urgency(req.urgency) if req.urgency else None,
         metadata=req.metadata,
         requested_by=requested_by,
     )
+    if goal is None:
+        # Duplicate — triage detected an existing goal
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "This looks like a duplicate of an existing goal.",
+                "duplicate_of": triage_result.duplicate_of,
+            },
+        )
     await publish("goal.created", {"goal_id": goal.id, "title": goal.title})
     return _goal_to_summary(goal)
 
