@@ -254,6 +254,18 @@ async def checkin_page(check_in_id: str):
     return HTMLResponse(html.read_text())
 
 
+@router.get("/checkins", response_class=HTMLResponse)
+async def checkins_list_page():
+    """List all check-ins — no auth required (tailnet boundary).
+
+    Serves a web page showing all check-ins with status/type filters
+    and links to each check-in's discussion page.
+    """
+    from pathlib import Path
+    html = Path(__file__).parent / "checkins_page.html"
+    return HTMLResponse(html.read_text())
+
+
 @router.get("/events/recent")
 async def recent_events(
     limit: int = 20,
@@ -286,11 +298,22 @@ async def list_check_ins_api(
     check_ins = await list_check_ins(
         goal_id=goal_id, status=status_filter, type=type_filter, limit=limit,
     )
+    # Fetch goal titles so the list page can show them
+    goal_ids = {ci.goal_id for ci in check_ins}
+    goal_titles = {}
+    if goal_ids:
+        from job_star.db import get_goal
+        for gid in goal_ids:
+            g = await get_goal(gid)
+            if g:
+                goal_titles[gid] = g.title
+
     return {
         "check_ins": [
             {
                 "id": ci.id,
                 "goal_id": ci.goal_id,
+                "goal_title": goal_titles.get(ci.goal_id, "Unknown goal"),
                 "step_id": ci.step_id,
                 "type": ci.type.value,
                 "status": ci.status.value,

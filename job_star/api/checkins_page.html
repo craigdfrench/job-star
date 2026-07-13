@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Job-Star Check-ins</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --panel: #181b23;
+      --panel-2: #1f232d;
+      --border: #2a2f3a;
+      --text: #e6e6e6;
+      --muted: #9aa3b2;
+      --accent: #4ea1ff;
+      --success: #3bd972;
+      --warning: #f7c948;
+      --danger: #ff6b6b;
+      --info: #64d2ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 24px 16px;
+    }
+    h1 { margin: 0 0 8px; font-size: 1.6rem; }
+    .subtitle { color: var(--muted); margin-bottom: 20px; }
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .tab {
+      padding: 10px 16px;
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      font-size: 0.95rem;
+    }
+    .tab.active {
+      color: var(--text);
+      border-bottom-color: var(--accent);
+    }
+    .checkin {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .checkin:hover { border-color: #3a4050; }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+    }
+    .title {
+      font-weight: 600;
+      font-size: 1.05rem;
+    }
+    .meta {
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    .badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .badge-progress { background: #2a3f5f; color: var(--accent); }
+    .badge-clarification { background: #5a3a3a; color: var(--danger); }
+    .badge-milestone { background: #4a3f2a; color: var(--warning); }
+    .badge-completion { background: #2a4f3a; color: var(--success); }
+    .summary {
+      color: var(--muted);
+      font-size: 0.95rem;
+      white-space: pre-wrap;
+    }
+    .actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 4px;
+    }
+    .btn {
+      padding: 8px 14px;
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 0.9rem;
+      font-weight: 500;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: #0f1117;
+      border-color: var(--accent);
+    }
+    .empty {
+      text-align: center;
+      color: var(--muted);
+      padding: 40px;
+    }
+    .loading { color: var(--muted); padding: 20px 0; }
+    .error { color: var(--danger); padding: 20px 0; }
+    .status-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 6px;
+    }
+    .dot-sent { background: var(--warning); }
+    .dot-actioned { background: var(--success); }
+    .dot-expired { background: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🌟 Job-Star Check-ins</h1>
+    <p class="subtitle">Review and respond to your pending check-ins.</p>
+
+    <div class="tabs">
+      <button class="tab active" data-filter="pending">Pending</button>
+      <button class="tab" data-filter="all">All</button>
+      <button class="tab" data-filter="actioned">Resolved</button>
+      <button class="tab" data-filter="expired">Expired</button>
+    </div>
+
+    <div id="checkins">Loading...</div>
+  </div>
+
+  <script>
+    const TYPE_ICONS = {
+      progress: '📊',
+      clarification: '❓',
+      milestone: '🏁',
+      completion: '✅',
+    };
+
+    const TYPE_BADGES = {
+      progress: 'badge-progress',
+      clarification: 'badge-clarification',
+      milestone: 'badge-milestone',
+      completion: 'badge-completion',
+    };
+
+    const STATUS_DOTS = {
+      sent: 'dot-sent',
+      actioned: 'dot-actioned',
+      expired: 'dot-expired',
+    };
+
+    async function loadCheckins() {
+      const container = document.getElementById('checkins');
+      container.innerHTML = '<div class="loading">Loading check-ins...</div>';
+      try {
+        const res = await fetch('/api/v1/check-ins?limit=100');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        renderCheckins(data.check_ins || []);
+      } catch (e) {
+        container.innerHTML = `<div class="error">Failed to load check-ins: ${e.message}</div>`;
+      }
+    }
+
+    function renderCheckins(checkins) {
+      const container = document.getElementById('checkins');
+      if (!checkins.length) {
+        container.innerHTML = '<div class="empty">No check-ins found.</div>';
+        return;
+      }
+      container.innerHTML = '';
+      checkins.forEach(ci => {
+        const el = document.createElement('div');
+        el.className = 'checkin';
+        el.dataset.status = ci.status;
+        const icon = TYPE_ICONS[ci.type] || '📋';
+        const badgeClass = TYPE_BADGES[ci.type] || 'badge-progress';
+        const dotClass = STATUS_DOTS[ci.status] || 'dot-sent';
+        const date = new Date(ci.created_at).toLocaleString();
+        const summary = (ci.progress_summary || '').slice(0, 200);
+        const link = `/checkin/${ci.id}`;
+        const discussBtn = ci.status === 'sent' ? `<a class="btn btn-primary" href="${link}">Discuss & Respond</a>` : '';
+        el.innerHTML = `
+          <div class="header">
+            <div>
+              <div class="title">${icon} ${escapeHtml(ci.goal_title || 'Unknown goal')}</div>
+              <div class="meta">
+                <span class="status-dot ${dotClass}"></span>
+                ${escapeHtml(ci.status)} • ${date} • ID ${ci.id.slice(0,8)}
+              </div>
+            </div>
+            <span class="badge ${badgeClass}">${escapeHtml(ci.type)}</span>
+          </div>
+          <div class="summary">${escapeHtml(summary)}</div>
+          <div class="actions">
+            ${discussBtn}
+            <a class="btn" href="${link}">View Details</a>
+          </div>
+        `;
+        container.appendChild(el);
+      });
+      applyFilter(currentFilter);
+    }
+
+    let currentFilter = 'pending';
+
+    function applyFilter(filter) {
+      currentFilter = filter;
+      document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.filter === filter));
+      document.querySelectorAll('.checkin').forEach(el => {
+        const status = el.dataset.status;
+        const show = filter === 'all' || status === filter ||
+          (filter === 'pending' && status === 'sent');
+        el.style.display = show ? 'flex' : 'none';
+      });
+    }
+
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => applyFilter(tab.dataset.filter));
+    });
+
+    function escapeHtml(s) {
+      if (!s) return '';
+      return s.toString()
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    loadCheckins();
+  </script>
+</body>
+</html>
