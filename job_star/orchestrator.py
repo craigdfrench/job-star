@@ -310,7 +310,7 @@ Break this goal into concrete steps."""
             failed_steps = [s for s in all_steps if s.status == StepStatus.FAILED]
             if len(failed_steps) >= 2:
                 try:
-                    check_in = await self.checkin_engine.create_clarification_check_in(
+                    check_in = await self.checkin_engine.maybe_create_clarification_check_in(
                         goal, all_steps, step=step,
                         issue=f"Step '{step.title}' failed: {result.error if result else 'unknown'}",
                     )

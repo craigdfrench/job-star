@@ -493,6 +493,30 @@ class CheckInEngine:
             questions=content["questions"],
         )
 
+    async def maybe_create_clarification_check_in(
+        self, goal: Goal, steps: list[Step],
+        step: Step | None = None,
+        issue: str = "",
+    ) -> CheckIn | None:
+        """Create a clarification check-in, but throttle to avoid spam.
+
+        Only creates one if no clarification check-in for this goal has been
+        sent in the last cooldown_hours (default 24h). Returns None if throttled.
+        """
+        cooldown_hours = goal.metadata.get("check_in_cooldown_hours", 24)
+        recent = await list_check_ins(
+            goal_id=goal.id, type=CheckInType.CLARIFICATION, limit=1,
+        )
+        if recent:
+            last = recent[0].created_at
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            hours_since = (datetime.now(timezone.utc) - last).total_seconds() / 3600
+            if hours_since < cooldown_hours:
+                return None  # throttle
+
+        return await self.create_clarification_check_in(goal, steps, step, issue)
+
     async def create_clarification_check_in(
         self, goal: Goal, steps: list[Step],
         step: Step | None = None,
