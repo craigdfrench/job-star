@@ -116,8 +116,11 @@ Secrets: `/etc/job-star-api-secrets.env` (API token + SMTP credentials)
 
 ## Resolved
 
-- **Gatehouse-ai Go tests fixed**: All 37 packages pass (`go test -count=1 ./...`). The struct field changes in `costclass_test.go` and build failures have been resolved. The failed "Review routing intelligence" step has been reset to pending and will be retried by the gatehouse-ai worker.
+- **Gatehouse-ai review goal completed**: All 24 steps done (0 failed). Go tests all pass (37 packages). The key fix: PR executor now detects review/analysis steps (title contains review/inspect/scan/verify/check/audit/analyze) and accepts a text review instead of requiring ## File: blocks.
 - **Flaky test resolved**: `test_step_dag_parallel_steps_no_deps` now passes consistently.
+- **Email notifications verified**: SMTP gateway at localhost:2525 accepts and relays to Gmail + Google Chat.
+- **Goal->check-in linking**: /goals page shows a green 'Review ->' button on goals with pending check-ins.
+- **Recent activity feed**: Dashboard shows last 6 completed steps with relative timestamps.
 
 ## Daily Workflow
 
