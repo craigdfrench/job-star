@@ -313,6 +313,7 @@ async def list_check_ins_api(
 @router.get("/check-ins/{check_in_id}")
 async def get_check_in_api(
     check_in_id: str,
+    user=Depends(get_current_user),
 ):
     """Get a single check-in with full details."""
     from job_star.checkin import get_check_in
@@ -342,6 +343,7 @@ async def get_check_in_api(
 async def respond_to_check_in_api(
     check_in_id: str,
     body: dict,
+    user=Depends(get_current_user),
 ):
     """Respond to a check-in with feedback and/or answers to questions.
 

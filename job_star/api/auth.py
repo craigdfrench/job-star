@@ -1,11 +1,11 @@
-"""FastAPI auth: supports Basic Auth, Bearer token, and query-param token (for SSE/EventSource)."""
+"""FastAPI auth: supports Tailscale identity (via Caddy), Basic Auth, Bearer token, and query-param token."""
 from __future__ import annotations
 
 import os
 import secrets
 from typing import Optional
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials, HTTPBearer, HTTPAuthorizationCredentials
 
 from .models import UserIdentity
@@ -24,11 +24,23 @@ def _get_env_creds():
 
 
 async def get_current_user(
+    request: Request,
     basic: Optional[HTTPBasicCredentials] = Depends(security_basic),
     bearer: Optional[HTTPAuthorizationCredentials] = Depends(security_bearer),
     token: Optional[str] = None,
+    x_tailscale_user: Optional[str] = Header(None, alias="X-Tailscale-User"),
 ) -> UserIdentity:
-    """Authenticate via Basic Auth, Bearer token, or ?token= query param."""
+    """Authenticate via Tailscale (Caddy header), Basic Auth, Bearer token, or ?token= query param.
+
+    Tailscale auth: Caddy's tailscale_auth directive authenticates the user and
+    forwards their identity as X-Tailscale-User. We trust this header because
+    it can only come from Caddy (which is on localhost). Direct access to the
+    API port (8003) without going through Caddy won't have this header.
+    """
+    # Tailscale identity (forwarded by Caddy's tailscale_auth)
+    if x_tailscale_user:
+        return UserIdentity(user_id=x_tailscale_user, role="tailscale")
+
     creds = _get_env_creds()
 
     # Query-param token (for SSE/EventSource which can't set headers)
