@@ -754,6 +754,26 @@ async def cmd_upgrade(positional: list[str], flags: dict[str, str]) -> None:
     )
 
 
+# ============================================================================
+# COMMENTARY command
+# ============================================================================
+
+async def cmd_commentary(positional: list[str], flags: dict[str, str]) -> None:
+    """AI-generated running commentary on what job-star is doing.
+
+    Usage:
+      job_star commentary          Full commentary
+      job_star commentary --brief  One-paragraph summary
+    """
+    from .commentary import generate_commentary
+    brief = bool(flags.get("brief"))
+    text = await generate_commentary(brief=brief)
+    print(text)
+    print()
+    await close_pool()
+
+
+
 COMMANDS = {
     "add": cmd_add,
     "list": cmd_list,
@@ -769,6 +789,7 @@ COMMANDS = {
     "experts": cmd_experts,
     "checkin": cmd_checkin,
     "upgrade": cmd_upgrade,
+    "commentary": cmd_commentary,
 }
 
 
@@ -827,7 +848,7 @@ def main():
               [--answer qid=value]  Answer a specific question
               [--feedback "text"]  Free-text feedback
 
-    upgrade [--check]        Safe upgrade: pre-flight → drain → reap → migrate → restart
+    commentary [--brief]      AI-generated summary of what job-star is doing\n\n    upgrade [--check]        Safe upgrade: pre-flight → drain → reap → migrate → restart
             [--reap]           Reap orphaned steps only
             [--commit]         Commit code before upgrading
 
