@@ -61,6 +61,11 @@ class GoalSummary(BaseModel):
     progress: float
     created_at: datetime
     updated_at: datetime
+    expert: Optional[str] = None
+    requested_by: Optional[str] = None
+    step_count: int = 0
+    completed_steps: int = 0
+    failed_steps: int = 0
 
 
 class GoalResponse(GoalSummary):

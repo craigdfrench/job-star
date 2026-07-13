@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Job-Star — Goals</title>
+  <style>
+    :root {
+      --bg: #0f1117; --card: #1a1d27; --border: #2a2d3a;
+      --text: #e6e6e6; --muted: #9aa3b2; --accent: #4ea1ff;
+      --green: #3bd972; --red: #ff6b6b; --yellow: #ffca28; --orange: #ff9800;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg); color: var(--text); line-height: 1.5;
+    }
+    .container { max-width: 800px; margin: 0 auto; padding: 24px 16px; }
+    h1 { font-size: 1.4rem; margin: 0 0 4px; }
+    .subtitle { color: var(--muted); margin-bottom: 16px; font-size: 0.9rem; }
+    .nav { display:flex; gap:16px; padding:8px 0; margin-bottom:16px; border-bottom:1px solid var(--border); }
+    .nav a { color:var(--muted); text-decoration:none; font-size:0.9rem; }
+    .nav a:hover { color:var(--accent); }
+    .nav a.active { color:var(--accent); font-weight:500; }
+    .section { margin-bottom: 24px; }
+    .section-title { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 8px; display:flex; align-items:center; gap:8px; }
+    .count-badge { background: var(--card); border:1px solid var(--border); border-radius:10px; padding:1px 8px; font-size:0.75rem; color: var(--muted); }
+    .goal-card { background: var(--card); border:1px solid var(--border); border-radius:8px; padding:14px; margin-bottom:8px; transition: border-color 0.15s; }
+    .goal-card:hover { border-color: var(--accent); }
+    .goal-title { font-weight: 600; font-size: 0.95rem; margin-bottom: 4px; }
+    .goal-meta { font-size: 0.8rem; color: var(--muted); display:flex; gap:12px; flex-wrap:wrap; }
+    .goal-meta span { display:inline-flex; align-items:center; gap:4px; }
+    .progress-bar { height: 4px; background: var(--border); border-radius: 2px; margin-top:8px; overflow:hidden; }
+    .progress-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s; }
+    .progress-fill.done { background: var(--green); }
+    .progress-fill.stuck { background: var(--red); }
+    .badge { display:inline-block; padding:1px 7px; border-radius:4px; font-size:0.7rem; font-weight:600; }
+    .b-coding { background:#1a2a3a; color:var(--accent); }
+    .b-infra { background:#1a3a3a; color:#5ad; }
+    .b-personal { background:#3a2a1a; color:var(--orange); }
+    .b-meta { background:#2a1a2a; color:#c5a; }
+    .b-soon { background:#3a2a1a; color:var(--yellow); }
+    .b-imperative { background:#3a1a1a; color:var(--red); }
+    .b-idle { background:#1a1a2a; color:var(--muted); }
+    .empty { color: var(--muted); font-style: italic; padding: 12px 0; }
+    .actions { margin-top: 12px; }
+    a.btn { display:inline-block; padding:8px 16px; border:1px solid var(--border); border-radius:6px; background:var(--card); color:var(--text); text-decoration:none; font-size:0.85rem; }
+    a.btn:hover { border-color:var(--accent); }
+    a.btn-primary { background:var(--accent); border-color:var(--accent); color:#0f1117; font-weight:500; }
+    .goal-id { font-family: monospace; font-size: 0.75rem; color: var(--muted); }
+    .filter-row { display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; }
+    .filter-row button { padding:5px 12px; border:1px solid var(--border); border-radius:6px; background:var(--card); color:var(--muted); cursor:pointer; font-family:inherit; font-size:0.8rem; }
+    .filter-row button.active { border-color:var(--accent); color:var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="nav">
+      <a href="/add">+ Add Goal</a>
+      <a href="/checkins">Check-ins</a>
+      <a href="/goals" class="active">Goals</a>
+    </div>
+    <h1>🌟 Job-Star Goals</h1>
+    <p class="subtitle">All active goals and their progress.</p>
+    <div id="user-info" style="margin-bottom: 12px;"></div>
+
+    <div class="filter-row">
+      <button class="active" data-filter="active" onclick="setFilter('active')">Active</button>
+      <button data-filter="all" onclick="setFilter('all')">All</button>
+      <button data-filter="done" onclick="setFilter('done')">Completed</button>
+    </div>
+
+    <div id="goals-content">
+      <p class="empty">Loading goals...</p>
+    </div>
+  </div>
+
+  <script>
+    const API = window.location.origin + '/api/v1';
+    let allGoals = [];
+    let currentFilter = 'active';
+
+    async function loadUser() {
+      try {
+        const r = await fetch(`${API}/whoami`);
+        if (r.ok) {
+          const data = await r.json();
+          if (data.email) {
+            document.getElementById('user-info').innerHTML = `<span style="font-size:0.8rem;color:var(--green)">👤 ${escapeHtml(data.email)}</span>`;
+          }
+        }
+      } catch(e) {}
+    }
+
+    async function loadGoals() {
+      try {
+        const r = await fetch(`${API}/goals`);
+        if (!r.ok) throw new Error(r.status);
+        const data = await r.json();
+        allGoals = data.goals;
+        renderGoals();
+      } catch(e) {
+        document.getElementById('goals-content').innerHTML = '<p class="empty" style="color:var(--red)">Could not load goals.</p>';
+      }
+    }
+
+    function setFilter(f) {
+      currentFilter = f;
+      document.querySelectorAll('.filter-row button').forEach(b => {
+        b.classList.toggle('active', b.dataset.filter === f);
+      });
+      renderGoals();
+    }
+
+    function renderGoals() {
+      let goals = allGoals;
+      if (currentFilter === 'active') goals = goals.filter(g => g.status === 'active');
+      else if (currentFilter === 'done') goals = goals.filter(g => g.status === 'completed' || g.status === 'abandoned');
+      else goals = goals; // all
+
+      if (goals.length === 0) {
+        document.getElementById('goals-content').innerHTML = `<p class="empty">No ${currentFilter} goals.</p>`;
+        return;
+      }
+
+      // Group active goals into categories
+      if (currentFilter === 'active') {
+        const unstarted = goals.filter(g => g.progress < 1 && (!g.step_count || g.step_count === 0));
+        const inProgress = goals.filter(g => g.progress > 0 && g.progress < 1);
+        const done = goals.filter(g => g.progress >= 1);
+
+        let html = '';
+
+        if (done.length > 0) {
+          html += `<div class="section"><div class="section-title">✅ Awaiting your review <span class="count-badge">${done.length}</span></div>`;
+          done.forEach(g => html += goalCard(g));
+          html += '</div>';
+        }
+        if (inProgress.length > 0) {
+          html += `<div class="section"><div class="section-title">🔄 In progress <span class="count-badge">${inProgress.length}</span></div>`;
+          inProgress.forEach(g => html += goalCard(g));
+          html += '</div>';
+        }
+        if (unstarted.length > 0) {
+          html += `<div class="section"><div class="section-title">📋 Needs starting <span class="count-badge">${unstarted.length}</span></div>`;
+          unstarted.forEach(g => html += goalCard(g));
+          html += '</div>';
+        }
+        document.getElementById('goals-content').innerHTML = html || '<p class="empty">No active goals.</p>';
+      } else {
+        let html = '<div class="section">';
+        goals.forEach(g => html += goalCard(g));
+        html += '</div>';
+        document.getElementById('goals-content').innerHTML = html;
+      }
+    }
+
+    function goalCard(g) {
+      const pct = Math.round((g.progress || 0) * 100);
+      const fillClass = pct >= 100 ? 'done' : (g.failed_steps > 0 ? 'stuck' : '');
+      const domainBadge = `<span class="badge b-${g.domain}">${g.domain}</span>`;
+      const urgencyBadge = `<span class="badge b-${g.urgency === 'idle-opportunistic' ? 'idle' : g.urgency}">${g.urgency}</span>`;
+      const statusBadge = g.status !== 'active' ? `<span class="badge b-idle">${g.status}</span>` : '';
+      const expert = g.expert ? ` · ${g.expert}` : '';
+      const requested = g.requested_by ? ` · 👤 ${escapeHtml(g.requested_by)}` : '';
+      const stepInfo = g.step_count ? `${g.completed_steps || 0}/${g.step_count} steps` : '';
+      const failedInfo = g.failed_steps > 0 ? ` · <span style="color:var(--red)">${g.failed_steps} failed</span>` : '';
+
+      return `
+        <div class="goal-card">
+          <div class="goal-title">${escapeHtml(g.title)}</div>
+          <div class="goal-meta">
+            <span class="goal-id">${g.id.slice(0,8)}</span>
+            ${domainBadge} ${urgencyBadge} ${statusBadge}
+            <span>${pct}%${expert}${requested}</span>
+            ${stepInfo ? `<span>${stepInfo}${failedInfo}</span>` : ''}
+          </div>
+          <div class="progress-bar"><div class="progress-fill ${fillClass}" style="width:${pct}%"></div></div>
+        </div>
+      `;
+    }
+
+    function escapeHtml(s) {
+      const d = document.createElement('div');
+      d.textContent = s || '';
+      return d.innerHTML;
+    }
+
+    loadUser();
+    loadGoals();
+  </script>
+</body>
+</html>

@@ -210,3 +210,12 @@ async def intake_page():
     from fastapi.responses import HTMLResponse
     html = Path(__file__).parent / "intake_page.html"
     return HTMLResponse(html.read_text())
+
+
+@app.get("/goals")
+async def goals_page():
+    """Goals list page - no auth (tailnet boundary)."""
+    from pathlib import Path
+    from fastapi.responses import HTMLResponse
+    html = Path(__file__).parent / "goals_page.html"
+    return HTMLResponse(html.read_text())

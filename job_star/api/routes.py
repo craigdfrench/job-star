@@ -44,7 +44,8 @@ router = APIRouter()
 _asks: dict[str, dict] = {}
 
 
-def _goal_to_summary(g) -> GoalSummary:
+def _goal_to_summary(g, step_counts: dict | None = None) -> GoalSummary:
+    sc = step_counts or {}
     return GoalSummary(
         id=g.id,
         title=g.title,
@@ -55,6 +56,11 @@ def _goal_to_summary(g) -> GoalSummary:
         progress=g.progress,
         created_at=g.created_at,
         updated_at=g.updated_at,
+        expert=g.expert,
+        requested_by=g.requested_by,
+        step_count=sc.get("total", 0),
+        completed_steps=sc.get("completed", 0),
+        failed_steps=sc.get("failed", 0),
     )
 
 
@@ -134,13 +140,30 @@ async def list_goals_api(
 ):
     """List goals with optional filters."""
     from job_star.models import GoalStatus, Domain, Urgency
+    from job_star.db import get_pool
     status_obj = GoalStatus(status) if status else None
     domain_obj = Domain(domain) if domain else None
     urgency_obj = Urgency(urgency) if urgency else None
 
     goals = await list_goals(status=status_obj, domain=domain_obj, urgency=urgency_obj)
+    # Fetch step counts in one query for all goals
+    counts = {}
+    if goals:
+        goal_ids = [g.id for g in goals]
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT goal_id,
+                          count(*) AS total,
+                          count(*) FILTER (WHERE status = 'completed') AS completed,
+                          count(*) FILTER (WHERE status = 'failed') AS failed
+                   FROM goal_steps WHERE goal_id = ANY($1::uuid[]) GROUP BY goal_id""",
+                goal_ids,
+            )
+            for r in rows:
+                counts[str(r["goal_id"])] = {"total": r["total"], "completed": r["completed"], "failed": r["failed"]}
     return GoalListResponse(
-        goals=[_goal_to_summary(g) for g in goals],
+        goals=[_goal_to_summary(g, counts.get(g.id)) for g in goals],
         total=len(goals),
     )
 
