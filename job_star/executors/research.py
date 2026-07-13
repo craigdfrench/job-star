@@ -360,7 +360,23 @@ class ResearchExecutor(DefaultExecutor):
             # so it can't be claimed until the current step is marked completed.
             # This prevents the worker from immediately picking it up.
 
+            # Time throttle: only create a recurring check-in if the last
+            # completed check-in was more than 25 days ago. This prevents an
+            # infinite loop where each completion immediately creates a new step.
             now = datetime.now(timezone.utc)
+            recent_completed = [
+                s for s in steps
+                if s.status.value == "completed" and s.completed_at
+            ]
+            if recent_completed:
+                last_completed = max(recent_completed, key=lambda s: s.completed_at)
+                last_dt = last_completed.completed_at
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+                days_since = (now - last_dt).days
+                if days_since < 25:
+                    return  # Too soon — don't create another check-in
+
             next_month_label = now.strftime("%B %Y")
             await create_step(
                 goal_id=goal.id,
