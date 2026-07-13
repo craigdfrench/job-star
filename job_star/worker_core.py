@@ -41,6 +41,69 @@ class Worker:
         self.max_cycles = max_cycles
         self.model = model
         self.orch = Orchestrator()
+        self.generation = int(os.environ.get("JOB_STAR_GENERATION", "1"))
+        self._draining = False
+        self._registered = False
+
+    async def _register(self) -> None:
+        """Register this worker in the worker_registry table."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO worker_registry (worker_id, generation, draining, started_at, metadata)
+                   VALUES ($1, $2, FALSE, NOW(), $3)
+                   ON CONFLICT (worker_id) DO UPDATE
+                   SET generation = $2, draining = FALSE, started_at = NOW(), metadata = $3
+                """,
+                self.worker_id, self.generation,
+                __import__('json').dumps({
+                    "machine": self.worker_machine,
+                    "expert": self.expert,
+                    "urgency": self.urgency.value if self.urgency else None,
+                    "interval": self.interval,
+                }),
+            )
+        self._registered = True
+
+    async def _heartbeat(self, current_step_id: str | None = None) -> None:
+        """Send a heartbeat to the worker_registry."""
+        if not self._registered:
+            return
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE worker_registry SET last_heartbeat = NOW(), current_step_id = $2 WHERE worker_id = $1",
+                self.worker_id,
+                current_step_id,
+            )
+
+    async def _check_drain_signal(self) -> bool:
+        """Check if this worker has been signaled to drain via the DB.
+
+        Returns True if the worker should drain (stop claiming new work).
+        This is the blue-green drain mechanism — the upgrade tool sets
+        draining=TRUE for old-generation workers.
+        """
+        if not self._registered:
+            return False
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            drain = await conn.fetchval(
+                "SELECT draining FROM worker_registry WHERE worker_id = $1",
+                self.worker_id,
+            )
+        return bool(drain)
+
+    async def _unregister(self) -> None:
+        """Mark this worker as drained and remove from registry."""
+        if not self._registered:
+            return
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM worker_registry WHERE worker_id = $1",
+                self.worker_id,
+            )
 
     async def _process_job_queue(self) -> bool:
         """Claim and process a job_queue item (e.g., plan a new goal)."""
@@ -88,8 +151,15 @@ class Worker:
 
     async def run_once(self) -> bool:
         """Claim and execute one work unit (job_queue or pending step)."""
+        # Check for drain signal (blue-green)
+        if await self._check_drain_signal():
+            self._draining = True
+            print(f"  [{self.worker_id}] drain signal received via DB — no new claims", flush=True)
+            return False
+
         # Prefer job_queue items first (plan/execute requests from API)
         if await self._process_job_queue():
+            await self._heartbeat()
             return True
 
         # Otherwise claim a pending step from any goal
@@ -106,6 +176,7 @@ class Worker:
         goal, step = claimed
         expert_tag = f" [{goal.expert}]" if goal.expert else ""
         print(f"  [{self.worker_id}] claimed:{expert_tag} {goal.title[:40]} → {step.title[:40]}", flush=True)
+        await self._heartbeat(str(step.id))
 
         result = await self.orch.work_on_goal(goal.id, model_override=self.model)
         if result.success:
@@ -137,6 +208,7 @@ class Worker:
 
         print(f"  Worker '{self.worker_id}' started. interval={self.interval}s", flush=True)
         print(f"  Machine: {self.worker_machine or '(unknown)'}", flush=True)
+        print(f"  Generation: {self.generation}", flush=True)
         if self.urgency:
             print(f"  urgency filter: {self.urgency.value}", flush=True)
         if self.domain:
@@ -148,6 +220,10 @@ class Worker:
         if self.model:
             print(f"  model override: {self.model}", flush=True)
         print(flush=True)
+
+        # Register in the worker registry
+        await self._register()
+        await self._heartbeat()
 
         cycle = 0
         try:
@@ -173,6 +249,7 @@ class Worker:
             print(f"  [{self.worker_id}] cancelled.", flush=True)
             raise
         finally:
+            await self._unregister()
             await close_pool()
 
 

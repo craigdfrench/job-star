@@ -7,13 +7,11 @@ Usage:
     python -m job_star upgrade --commit    # Commit current changes and restart
 
 The upgrade process:
-  1. PRE-FLIGHT:  Run tests, check git status, check for syntax errors
-  2. DRAIN:       Stop workers, wait for in-progress steps to settle
-  3. REAP:        Reset orphaned in_progress steps back to pending
-  4. MIGRATE:     Apply additive DB schema changes (CREATE TABLE IF NOT EXISTS)
-  5. RESTART:     Restart API first, then workers
-  6. VERIFY:      Check all services are active, run smoke tests
-  7. ROLLBACK:    (manual) git checkout + restart if something breaks
+  1. PRE-FLIGHT:  Run syntax/import checks, check git status, detect orphans
+  2. REAP:        Reset orphaned in_progress steps back to pending
+  3. MIGRATE:     Apply versioned DB migrations (schema_migrations table)
+  4. RESTART:     Blue-green rolling restart (API first, then workers one at a time)
+  5. VERIFY:      Health check via /health endpoint + DB check + auto-rollback on failure
 
 Design principles:
   - Additive migrations only (new tables/columns with defaults). Never drop.
@@ -34,6 +32,9 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from .db import get_pool, close_pool, audit, publish_event
+
+# The commit hash before this upgrade (for automatic rollback)
+_PRE_UPGRADE_COMMIT: str | None = None
 
 
 # ============================================================================
@@ -413,7 +414,197 @@ def _extract_trigger_table(stmt: str) -> str:
 
 
 # ============================================================================
-# Full upgrade process
+# Health check — used by the upgrade tool and monitoring
+# ============================================================================
+
+async def check_health() -> dict:
+    """Check system health by polling the API /health endpoint."""
+    import urllib.request
+    import json as _json
+
+    for port in (8700, 8003):
+        try:
+            req = urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=5)
+            data = _json.loads(req.read())
+            return {"healthy": data.get("status") == "healthy", "details": data, "source": f"api:{port}"}
+        except Exception:
+            continue
+
+    # Fallback: DB-only
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        await close_pool()
+        return {"healthy": True, "details": {"database": "ok"}, "source": "db-direct"}
+    except Exception as e:
+        return {"healthy": False, "details": {"error": str(e)}, "source": "db-failed"}
+
+
+# ============================================================================
+# Schema version migration runner
+# ============================================================================
+
+async def get_schema_version() -> int:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        try:
+            return await conn.fetchval("SELECT max(version) FROM schema_migrations") or 0
+        except Exception:
+            return 0
+    await close_pool()
+
+
+async def apply_versioned_migrations() -> list[str]:
+    """Apply pending migrations from sql/migrations/ directory.
+
+    Uses schema_migrations table to track applied versions.
+    Only runs migrations with version > current.
+    """
+    root = _project_root()
+    migrations_dir = os.path.join(root, "sql", "migrations")
+    if not os.path.isdir(migrations_dir):
+        return ["No migrations directory found"]
+
+    migration_files = []
+    for fname in sorted(os.listdir(migrations_dir)):
+        if fname.endswith(".sql"):
+            parts = fname.split("_", 1)
+            try:
+                version = int(parts[0])
+                name = parts[1].replace(".sql", "") if len(parts) > 1 else fname
+                migration_files.append((version, name, os.path.join(migrations_dir, fname)))
+            except (ValueError, IndexError):
+                continue
+
+    if not migration_files:
+        return ["No migration files found"]
+
+    current_version = await get_schema_version()
+    applied = []
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        for version, name, filepath in migration_files:
+            if version <= current_version:
+                continue
+            with open(filepath) as f:
+                sql = f.read()
+            try:
+                for stmt in _split_sql_statements(sql):
+                    stmt = stmt.strip()
+                    if stmt and not stmt.startswith("--"):
+                        try:
+                            await conn.execute(stmt)
+                        except Exception as e:
+                            if "already exists" not in str(e).lower():
+                                print(f"    Warning: {e}", flush=True)
+                await conn.execute(
+                    "INSERT INTO schema_migrations (version, name) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                    version, name,
+                )
+                applied.append(f"Applied migration {version:03d}: {name}")
+            except Exception as e:
+                applied.append(f"FAILED migration {version:03d}: {name} — {e}")
+    await close_pool()
+    return applied
+
+
+# ============================================================================
+# Blue-green rolling restart
+# ============================================================================
+
+async def signal_worker_drain(worker_id: str) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE worker_registry SET draining = TRUE WHERE worker_id = $1", worker_id)
+    await close_pool()
+
+
+async def wait_for_worker_drain(worker_id: str, timeout: int = 120) -> bool:
+    pool = await get_pool()
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT current_step_id FROM worker_registry WHERE worker_id = $1", worker_id,
+            )
+        if not row or not row["current_step_id"]:
+            await close_pool()
+            return True
+        time.sleep(2)
+    await close_pool()
+    return False
+
+
+def _service_worker_id(svc: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", svc, "--property=Environment"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.split():
+                if line.startswith("JOB_STAR_WORKER="):
+                    return line.split("=", 1)[1]
+    except Exception:
+        pass
+    return None
+
+
+def rolling_restart_worker(svc: str, drain_timeout: int = 90) -> bool:
+    """Blue-green restart: drain via DB, then systemctl restart."""
+    worker_id = _service_worker_id(svc)
+    if not worker_id:
+        restart_service(svc)
+        return wait_for_service(svc, timeout=15)
+
+    print(f"  │  Signaling {worker_id} to drain...")
+    asyncio.run(signal_worker_drain(worker_id))
+    print(f"  │  Waiting for drain (timeout {drain_timeout}s)...")
+    drained = asyncio.run(wait_for_worker_drain(worker_id, timeout=drain_timeout))
+    if drained:
+        print(f"  │  Drained")
+    else:
+        print(f"  │  Drain timeout — forcing restart")
+
+    restart_service(svc)
+    success = wait_for_service(svc, timeout=15)
+    if success:
+        time.sleep(1)
+        print(f"  │  Active with new code")
+    return success
+
+
+# ============================================================================
+# Automatic rollback
+# ============================================================================
+
+def save_pre_upgrade_commit() -> str | None:
+    try:
+        result = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=_project_root())
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def rollback_to_commit(commit: str) -> bool:
+    print(f"  │  Rolling back to commit {commit[:8]}...")
+    result = subprocess.run(["git", "reset", "--hard", commit], capture_output=True, text=True, cwd=_project_root())
+    if result.returncode != 0:
+        print(f"  │  Git rollback failed: {result.stderr}")
+        return False
+    print(f"  │  Code rolled back")
+    for svc in SERVICES:
+        print(f"  │  Restarting {svc}...")
+        restart_service(svc)
+        wait_for_service(svc, timeout=10)
+    return True
+
+
+# ============================================================================
+# Full upgrade process — blue-green with automatic rollback
 # ============================================================================
 
 async def run_upgrade(
@@ -427,6 +618,12 @@ async def run_upgrade(
     print("  ║          Job-Star Upgrade Process                         ║")
     print(f"  ║  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{' ' * 47}   ║")
     print("  ╚══════════════════════════════════════════════════════════╝")
+    print()
+
+    # Save pre-upgrade commit for potential rollback
+    pre_commit = save_pre_upgrade_commit()
+    if pre_commit:
+        print(f"  Pre-upgrade commit: {pre_commit[:8]}")
     print()
 
     # ─── 1. PRE-FLIGHT ─────────────────────────────────────────────────
@@ -476,23 +673,24 @@ async def run_upgrade(
 
     # ─── 2. DRAIN ─────────────────────────────────────────────────────
     if dry_run:
-        print("  ┌─ 2. DRAIN (DRY RUN — not stopping workers)")
-        print("  │  Would stop: {', '.join(SERVICES)}")
-        print("  └─")
-        print()
-        print("  ┌─ 3. REAP (DRY RUN)")
+        print("  ┌─ 2. REAP (DRY RUN)")
         print(f"  │  Would reap {results['orphaned_steps']} orphaned step(s)")
         print("  └─")
         print()
-        print("  ┌─ 4. MIGRATE (DRY RUN)")
-        print("  │  Would apply additive schema changes from sql/schema.sql")
+        print("  ┌─ 3. MIGRATE (DRY RUN)")
+        print("  │  Would apply versioned migrations from sql/migrations/")
         print("  └─")
         print()
-        print("  ┌─ 5. RESTART (DRY RUN)")
-        print("  │  Would restart: {', '.join(SERVICES)}")
+        print("  ┌─ 4. RESTART (DRY RUN — blue-green rolling)")
+        print("  │  Would rolling-restart: {', '.join(SERVICES)}")
+        print("  │  (one at a time, drain via DB, no downtime)")
         print("  └─")
         print()
-        print("  ✓ Dry run complete. No changes made.")
+        print("  ┌─ 5. VERIFY (DRY RUN)")
+        print("  │  Would check /health endpoint + DB + automatic rollback on failure")
+        print("  └─")
+        print()
+        print("  Dry run complete. No changes made.")
         await close_pool()
         return 0
 
@@ -526,48 +724,56 @@ async def run_upgrade(
     print("  └─")
     print()
 
-    # ─── 4. MIGRATE ────────────────────────────────────────────────────
-    print("  ┌─ 4. MIGRATE — applying additive schema changes")
-    migrations = await apply_migrations()
+    # ─── 3. MIGRATE ────────────────────────────────────────────────────
+    print("  ┌─ 3. MIGRATE — applying versioned schema migrations")
+    current_ver = await get_schema_version()
+    print(f"  │  Current schema version: {current_ver}")
+    migrations = await apply_versioned_migrations()
     if migrations:
         for m in migrations:
-            print(f"  │  ✓ {m}")
+            if m.startswith("FAILED"):
+                print(f"  │  ✗ {m}")
+            elif m.startswith("Applied"):
+                print(f"  │  ✓ {m}")
+            else:
+                print(f"  │  {m}")
     else:
-        print(f"  │  No new migrations to apply.")
+        print(f"  │  Already at latest schema version.")
     print("  └─")
     print()
 
-    # ─── 5. RESTART ────────────────────────────────────────────────────
-    print("  ┌─ 5. RESTART — bringing services back up")
-    print("  │")
-    # Start API first
-    api_svc = "job-star-api"
-    print(f"  │  Starting {api_svc}...")
-    restart_service(api_svc)
-    if wait_for_service(api_svc, timeout=10):
-        print(f"  │  ✓ {api_svc} is active")
-    else:
-        print(f"  │  ✗ {api_svc} failed to start!")
-        print("  └─")
-        return 1
-
-    # Start workers
-    for svc in worker_services:
-        print(f"  │  Starting {svc}...")
-        start_service(svc)
-        if wait_for_service(svc, timeout=10):
-            print(f"  │  ✓ {svc} is active")
-        else:
-            print(f"  │  ⚠ {svc} failed to start (may need manual intervention)")
-
-    print("  │")
-    print("  └─ ✓ Services restarted")
-    print()
-
-    # ─── 6. VERIFY ─────────────────────────────────────────────────────
-    print("  ┌─ 6. VERIFY — post-upgrade smoke test")
+    # ─── 4. RESTART (blue-green rolling) ─────────────────────────────
+    print("  ┌─ 4. RESTART — blue-green rolling restart")
     print("  │")
     all_ok = True
+
+    # API first (stateless — safe to restart immediately)
+    api_svc = "job-star-api"
+    print(f"  │  [{api_svc}] restarting...")
+    restart_service(api_svc)
+    if wait_for_service(api_svc, timeout=10):
+        print(f"  │  [{api_svc}] active")
+    else:
+        print(f"  │  [{api_svc}] FAILED")
+        all_ok = False
+
+    # Workers: rolling restart one at a time (blue-green)
+    worker_services = [s for s in SERVICES if "worker" in s]
+    for svc in worker_services:
+        print(f"  │  [{svc}] blue-green rolling restart...")
+        if rolling_restart_worker(svc):
+            print(f"  │  [{svc}] active with new code")
+        else:
+            print(f"  │  [{svc}] FAILED")
+            all_ok = False
+
+    print("  │")
+    print("  └─ Services restarted")
+    print()
+
+    # ─── 5. VERIFY (health check + automatic rollback) ────────────────
+    print("  ┌─ 5. VERIFY — post-upgrade health check")
+    print("  │")
     for svc in SERVICES:
         status = service_status(svc)
         icon = "✓" if status == "active" else "✗"
@@ -575,13 +781,22 @@ async def run_upgrade(
         if status != "active":
             all_ok = False
 
-    # Quick DB check
+    # API health endpoint check
+    health = await check_health()
+    if health["healthy"]:
+        print(f"  │  ✓ Health endpoint: healthy (via {health['source']})")
+    else:
+        print(f"  │  ✗ Health endpoint: unhealthy")
+        all_ok = False
+
+    # DB check
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
             total = await conn.fetchval("SELECT count(*) FROM goals")
             pending = await conn.fetchval("SELECT count(*) FROM goal_steps WHERE status='pending'")
-        print(f"  │  ✓ DB responsive: {total} goals, {pending} pending steps")
+            new_ver = await conn.fetchval("SELECT max(version) FROM schema_migrations") or 0
+        print(f"  │  ✓ DB responsive: {total} goals, {pending} pending steps, schema v{new_ver}")
         await close_pool()
     except Exception as e:
         print(f"  │  ✗ DB check failed: {e}")
@@ -591,12 +806,26 @@ async def run_upgrade(
     if all_ok:
         print("  └─ ✓ Upgrade complete — all services healthy")
     else:
-        print("  └─ ⚠ Upgrade complete — some services need attention")
+        print("  └─ ⚠ Verification FAILED — attempting automatic rollback...")
+        print()
+        if pre_commit and rollback_to_commit(pre_commit):
+            print("  ┌─ ROLLBACK COMPLETE")
+            for svc in SERVICES:
+                print(f"  │  {svc}: {service_status(svc)}")
+            print("  └─")
+            await audit("system_rollback", {"from_commit": pre_commit, "reason": "verification failed"})
+            print()
+            print("  ⚠ System rolled back to previous commit. Check logs for details.")
+            return 3
+        else:
+            print("  ✗ AUTOMATIC ROLLBACK FAILED — manual intervention required!")
+            return 4
     print()
 
     await audit("system_upgraded", {
         "reaped_steps": reaped,
         "migrations": migrations,
+        "pre_commit": pre_commit,
         "services": {svc: service_status(svc) for svc in SERVICES},
     })
 

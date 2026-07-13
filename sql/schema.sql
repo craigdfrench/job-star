@@ -219,6 +219,32 @@ CREATE TRIGGER checkins_updated_at
     EXECUTE FUNCTION update_timestamp();
 
 -- ============================================================================
+-- SCHEMA MIGRATIONS: Track which DB migrations have been applied.
+-- The upgrade tool reads sql/migrations/ and applies pending ones.
+-- ============================================================================
+CREATE TABLE schema_migrations (
+    version INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    checksum TEXT,
+    applied_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- ============================================================================
+-- WORKER REGISTRY: Blue-green drain management.
+-- Workers register on startup, send heartbeats, and check for drain signals.
+-- The upgrade tool sets draining=TRUE for old workers to drain them gracefully.
+-- ============================================================================
+CREATE TABLE worker_registry (
+    worker_id TEXT PRIMARY KEY,
+    generation INTEGER NOT NULL DEFAULT 1,
+    draining BOOLEAN NOT NULL DEFAULT FALSE,
+    last_heartbeat TIMESTAMP,
+    current_step_id UUID,
+    started_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    metadata JSONB DEFAULT '{}'
+);
+
+-- ============================================================================
 -- EVENTS: Distributed pub/sub for SSE and cross-machine notifications.
 -- Consumers read from this table and delete or archive old events.
 -- ============================================================================
