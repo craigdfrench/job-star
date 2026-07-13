@@ -165,6 +165,9 @@ def _estimate_complexity(request_type: str, description: str) -> float:
         "chore": 0.2,
         "docs": 0.3,
         "research": 0.8,
+        "code": 0.7,          # code editing/generation
+        "code_review": 0.5,
+        "planning": 0.4,
     }.get(request_type, 0.5)
 
     desc_len = len(description)
