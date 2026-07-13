@@ -149,6 +149,36 @@ class Worker:
             await publish_event("job.failed", {"job_id": str(job["id"]), "goal_id": goal_id, "error": str(exc)})
             return True
 
+    async def _plan_unstarted_goals(self) -> bool:
+        """Find active goals with no steps and plan them.
+
+        This prevents workers from idling while there are goals that have
+        never been started. Planning is lightweight and idempotent.
+        """
+        from .db import get_active_goals_with_no_steps
+        goals = await get_active_goals_with_no_steps()
+        if not goals:
+            return False
+
+        # Respect worker filters: urgency, domain, expert affinity
+        for goal in goals:
+            if self.urgency and goal.urgency != self.urgency:
+                continue
+            if self.domain and goal.domain != self.domain:
+                continue
+            if not self.expert_any and self.expert and goal.expert != self.expert:
+                continue
+            if not self.expert_any and not self.expert and goal.expert:
+                continue
+
+            print(f"  [{self.worker_id}] planning unstarted goal: {goal.title[:40]}", flush=True)
+            try:
+                await self.orch.plan_goal(goal.id)
+                return True
+            except Exception as exc:
+                print(f"  [{self.worker_id}] planning failed: {exc}", flush=True)
+        return False
+
     async def run_once(self) -> bool:
         """Claim and execute one work unit (job_queue or pending step)."""
         # Check for drain signal (blue-green)
@@ -171,6 +201,11 @@ class Worker:
             worker_machine=self.worker_machine,
         )
         if not claimed:
+            # No pending steps — see if there are active goals with no steps
+            # that need planning. This keeps workers busy when new goals are
+            # added but not explicitly started.
+            if await self._plan_unstarted_goals():
+                return True
             return False
 
         goal, step = claimed

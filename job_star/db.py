@@ -158,6 +158,27 @@ async def list_goals(
     return [Goal.from_row(dict(r)) for r in rows]
 
 
+async def get_active_goals_with_no_steps() -> list[Goal]:
+    """Return active goals that have no steps yet.
+
+    These need to be planned before workers can execute them.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT g.* FROM goals g
+            WHERE g.status = 'active'
+              AND NOT EXISTS (SELECT 1 FROM goal_steps s WHERE s.goal_id = g.id)
+            ORDER BY CASE g.urgency
+              WHEN 'imperative' THEN 0
+              WHEN 'soon' THEN 1
+              WHEN 'idle-opportunistic' THEN 2
+              ELSE 3 END,
+              g.updated_at DESC
+        """)
+    return [Goal.from_row(dict(r)) for r in rows]
+
+
 async def update_goal_status(goal_id: str, status: GoalStatus) -> None:
     pool = await get_pool()
     async with pool.acquire() as conn:
