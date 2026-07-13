@@ -1,11 +1,19 @@
-"""FastAPI auth: supports Tailscale identity (via Caddy), Basic Auth, Bearer token, and query-param token."""
+"""FastAPI auth: supports Tailscale network trust, Basic Auth, Bearer token, and query-param token.
+
+Tailscale network trust: requests from the Tailscale IP range (100.64.0.0/10)
+or localhost are trusted as authenticated, since the Tailscale network itself
+is the authentication boundary. Tagged machines (which have no user identity)
+can still access the API this way. Direct access to port 8003 from outside
+the Tailscale network requires the API token.
+"""
 from __future__ import annotations
 
 import os
 import secrets
+import ipaddress
 from typing import Optional
 
-from fastapi import Depends, Header, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials, HTTPBearer, HTTPAuthorizationCredentials
 
 from .models import UserIdentity
@@ -13,6 +21,24 @@ from .models import UserIdentity
 
 security_basic = HTTPBasic(auto_error=False)
 security_bearer = HTTPBearer(auto_error=False)
+
+# Tailscale CGNAT range — all Tailscale IPs are in 100.64.0.0/10
+TAILSCALE_NET = ipaddress.ip_network("100.64.0.0/10")
+LOCALHOST_NETS = [ipaddress.ip_network("127.0.0.0/8"), ipaddress.ip_network("::1/128")]
+
+
+def _is_tailscale_or_localhost(client_ip: str) -> bool:
+    """Check if the request comes from the Tailscale network or localhost."""
+    try:
+        ip = ipaddress.ip_address(client_ip)
+        if ip in TAILSCALE_NET:
+            return True
+        for net in LOCALHOST_NETS:
+            if ip in net:
+                return True
+    except (ValueError, ipaddress.AddressValueError):
+        pass
+    return False
 
 
 def _get_env_creds():
@@ -28,18 +54,19 @@ async def get_current_user(
     basic: Optional[HTTPBasicCredentials] = Depends(security_basic),
     bearer: Optional[HTTPAuthorizationCredentials] = Depends(security_bearer),
     token: Optional[str] = None,
-    x_tailscale_user: Optional[str] = Header(None, alias="X-Tailscale-User"),
 ) -> UserIdentity:
-    """Authenticate via Tailscale (Caddy header), Basic Auth, Bearer token, or ?token= query param.
+    """Authenticate via Tailscale network trust, Basic Auth, Bearer token, or ?token= query param.
 
-    Tailscale auth: Caddy's tailscale_auth directive authenticates the user and
-    forwards their identity as X-Tailscale-User. We trust this header because
-    it can only come from Caddy (which is on localhost). Direct access to the
-    API port (8003) without going through Caddy won't have this header.
+    Tailscale trust: if the request comes from the Tailscale network (100.64.0.0/10)
+    or localhost, it's trusted as authenticated. The Tailscale network is the
+    authentication boundary — only machines on the tailnet can reach Caddy, and
+    only Caddy can reach the API. Tagged machines (which have no user identity in
+    Tailscale) are still trusted because they're on the network.
     """
-    # Tailscale identity (forwarded by Caddy's tailscale_auth)
-    if x_tailscale_user:
-        return UserIdentity(user_id=x_tailscale_user, role="tailscale")
+    # Tailscale network trust
+    client_ip = request.client.host if request.client else ""
+    if _is_tailscale_or_localhost(client_ip):
+        return UserIdentity(user_id=f"tailscale:{client_ip}", role="tailscale")
 
     creds = _get_env_creds()
 
