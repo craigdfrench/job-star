@@ -192,3 +192,12 @@ async def checkin_page(check_in_id: str):
     from fastapi.responses import HTMLResponse
     html = Path(__file__).parent / "checkin_page.html"
     return HTMLResponse(html.read_text())
+
+
+@app.get("/checkins")
+async def checkins_list_page():
+    """List all check-ins - no auth (tailnet boundary)."""
+    from pathlib import Path
+    from fastapi.responses import HTMLResponse
+    html = Path(__file__).parent / "checkins_page.html"
+    return HTMLResponse(html.read_text())
