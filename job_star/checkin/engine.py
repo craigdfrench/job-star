@@ -383,7 +383,7 @@ Generate the check-in content as a JSON object."""
 
     # Fallback: if AI generation fails, create a basic check-in from step data
     if not result or not result.success:
-        return _fallback_check_in_content(goal, steps, type)
+        return _fallback_check_in_content(goal, steps, type, extra_context or "")
 
     # Parse the AI output as JSON
     content = result.content.strip()
@@ -416,10 +416,29 @@ Generate the check-in content as a JSON object."""
     }
 
 
+def _failed_step_details(steps: list[Step]) -> str:
+    """Build a concise diagnostic summary of failed steps."""
+    failed = [s for s in steps if s.status == StepStatus.FAILED]
+    if not failed:
+        return ""
+    lines = ["Recent failures:"]
+    for s in failed[-3:]:
+        error = ""
+        if s.result and isinstance(s.result, dict):
+            error = s.result.get("error", "") or s.result.get("content", "")[:200]
+        lines.append(f"  • {s.title}: {error[:200]}")
+    return "\n".join(lines)
+
+
 def _fallback_check_in_content(
     goal: Goal, steps: list[Step], type: CheckInType,
+    issue: str = "",
 ) -> dict:
-    """Generate a basic check-in without AI (when AI is unavailable)."""
+    """Generate a basic check-in without AI (when AI is unavailable).
+
+    Check-ins must be actionable. For clarification/failure, the user gets
+    specific options (retry, skip, abandon) and the actual error context.
+    """
     completed = [s for s in steps if s.status == StepStatus.COMPLETED]
     pending = [s for s in steps if s.status == StepStatus.PENDING]
     failed = [s for s in steps if s.status == StepStatus.FAILED]
@@ -446,9 +465,12 @@ def _fallback_check_in_content(
             required=True,
         ))
     elif type == CheckInType.CLARIFICATION:
+        details = issue or _failed_step_details(steps) or "The step could not be completed."
+        summary = f"{summary}\n\n{details}".strip()
         questions.append(CheckInQuestion(
-            question="The system encountered issues. How would you like to proceed?",
-            type="text",
+            question="The system is stuck. What should it do?",
+            type="choice",
+            options=["Retry the failed step", "Skip the failed step", "Abandon the goal", "Tell me more first"],
             required=True,
         ))
 
@@ -588,32 +610,69 @@ class CheckInEngine:
 
         actions = []
 
-        # Extract decisions
+        # Extract decisions and take action
         for d in check_in.decisions:
             qid = d.get("question_id", "")
             answer = d.get("answer", "")
 
-            # Find the matching question
             for q in check_in.questions:
-                if q.id == qid and q.type == "approval":
-                    if check_in.type == CheckInType.COMPLETION:
-                        if "accept" in answer.lower():
-                            # Accept: mark goal as completed
-                            await update_goal_status(goal.id, GoalStatus.COMPLETED)
-                            await update_goal_progress(goal.id, 1.0)
-                            await audit("goal_accepted", {
-                                "check_in_id": check_in_id,
-                            }, goal.id)
-                            actions.append("goal_accepted")
-                        elif "revision" in answer.lower() or "reject" in answer.lower():
-                            # Reject: reopen the goal, create a new step for revision
-                            await audit("goal_rejected", {
-                                "check_in_id": check_in_id,
-                                "user_feedback": check_in.response or "",
-                            }, goal.id)
-                            actions.append("goal_rejected_revision_needed")
-                    elif q.type == "approval":
-                        actions.append(f"approved: {answer}")
+                if q.id != qid:
+                    continue
+
+                if q.type == "approval" and check_in.type == CheckInType.COMPLETION:
+                    if "accept" in answer.lower():
+                        await update_goal_status(goal.id, GoalStatus.COMPLETED)
+                        await update_goal_progress(goal.id, 1.0)
+                        await audit("goal_accepted", {
+                            "check_in_id": check_in_id,
+                        }, goal.id)
+                        actions.append("goal_accepted")
+                    elif "revision" in answer.lower() or "reject" in answer.lower():
+                        await audit("goal_rejected", {
+                            "check_in_id": check_in_id,
+                            "user_feedback": check_in.response or "",
+                        }, goal.id)
+                        actions.append("goal_rejected_revision_needed")
+
+                elif q.type == "choice" and check_in.type == CheckInType.CLARIFICATION:
+                    choice = answer.lower()
+                    if "retry" in choice:
+                        # Reset failed steps to pending so the orchestrator retries
+                        from ..db import get_steps, update_step_status
+                        steps = await get_steps(goal.id)
+                        for s in steps:
+                            if s.status == StepStatus.FAILED:
+                                await update_step_status(s.id, StepStatus.PENDING)
+                        await audit("goal_retry_failed", {
+                            "check_in_id": check_in_id,
+                            "user_feedback": check_in.response or "",
+                        }, goal.id)
+                        actions.append("failed_steps_reset_for_retry")
+                    elif "skip" in choice:
+                        # Mark failed steps as skipped (completed with a skipped marker)
+                        from ..db import get_steps, update_step_status
+                        steps = await get_steps(goal.id)
+                        for s in steps:
+                            if s.status == StepStatus.FAILED:
+                                await update_step_status(s.id, StepStatus.PENDING)
+                        await audit("goal_failed_steps_skipped", {
+                            "check_in_id": check_in_id,
+                            "user_feedback": check_in.response or "",
+                        }, goal.id)
+                        actions.append("failed_steps_skipped")
+                    elif "abandon" in choice:
+                        await update_goal_status(goal.id, GoalStatus.ABANDONED)
+                        await audit("goal_abandoned", {
+                            "check_in_id": check_in_id,
+                            "user_feedback": check_in.response or "",
+                        }, goal.id)
+                        actions.append("goal_abandoned")
+                    elif "more" in choice:
+                        # User wants more info — just action the check-in, no automatic step
+                        await audit("clarification_more_info", {
+                            "check_in_id": check_in_id,
+                        }, goal.id)
+                        actions.append("more_info_requested")
 
         # Record the user's decision in the decisions log
         await record_decision(
