@@ -62,6 +62,15 @@ async def create_check_in(
     await publish_event("checkin.created", {
         "check_in_id": check_in.id, "goal_id": goal_id, "type": type.value,
     })
+    
+    # Send notification (email + chat via the email gateway)
+    try:
+        from ..notify import send_check_in_notification
+        import asyncio
+        asyncio.create_task(send_check_in_notification(check_in.id))
+    except Exception:
+        pass  # notification failure should not block check-in creation
+    
     return check_in
 
 

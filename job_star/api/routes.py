@@ -242,6 +242,18 @@ async def panel():
     return HTMLResponse(html.read_text())
 
 
+@router.get("/checkin/{check_in_id}", response_class=HTMLResponse)
+async def checkin_page(check_in_id: str):
+    """Interactive check-in discussion page — no auth required (tailnet boundary).
+
+    Serves a web page that loads the check-in, shows progress/questions,
+    and provides an LLM-powered chat for the user to discuss before responding.
+    """
+    from pathlib import Path
+    html = Path(__file__).parent / "checkin_page.html"
+    return HTMLResponse(html.read_text())
+
+
 @router.get("/events/recent")
 async def recent_events(
     limit: int = 20,
@@ -416,3 +428,86 @@ async def create_check_in_api(
         "questions": len(ci.questions),
     }
 
+
+
+# ============================================================================
+# CHECK-IN DISCUSSION — LLM-powered chat for check-in pages (no auth, tailnet)
+# ============================================================================
+
+@router.post("/check-ins/{check_in_id}/discuss")
+async def discuss_check_in(
+    check_in_id: str,
+    body: dict,
+):
+    """Discuss a check-in with an LLM helper. No auth required (tailnet boundary).
+
+    The LLM (gemini-3-5-flash-minimal) has the full check-in context and can
+    answer questions about the goal, progress, results, and help the user
+    decide how to respond.
+
+    Body: {"message": "user's question or comment"}
+    Returns: {"response": "LLM's reply"}
+    """
+    from job_star.checkin import get_check_in
+    from job_star.db import get_goal
+    from job_star.gatehouse import execute as execute_ai
+
+    check_in = await get_check_in(check_in_id)
+    if not check_in:
+        raise HTTPException(status_code=404, detail="Check-in not found")
+
+    message = body.get("message", "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message is required")
+
+    goal = await get_goal(check_in.goal_id)
+    goal_title = goal.title if goal else "Unknown goal"
+    goal_desc = goal.description if goal else ""
+
+    # Build context for the LLM
+    context_parts = [
+        f"You are Job-Star's check-in assistant. The user is reviewing a check-in and wants to discuss it.",
+        f"Help them understand the progress, the questions, and what the system needs from them.",
+        f"Be concise and helpful. Do NOT make decisions for the user — help them decide.",
+        f"",
+        f"GOAL: {goal_title}",
+    ]
+    if goal_desc:
+        context_parts.append(f"DESCRIPTION: {goal_desc}")
+
+    context_parts.append(f"CHECK-IN TYPE: {check_in.type.value}")
+    context_parts.append(f"STATUS: {check_in.status.value}")
+
+    if check_in.progress_summary:
+        context_parts.append(f"PROGRESS SUMMARY: {check_in.progress_summary}")
+
+    if check_in.results:
+        context_parts.append(f"RESULTS: {check_in.results[:1000]}")
+
+    if check_in.next_steps:
+        context_parts.append(f"NEXT STEPS: {check_in.next_steps}")
+
+    if check_in.questions:
+        q_lines = ["QUESTIONS:"]
+        for i, q in enumerate(check_in.questions, 1):
+            q_lines.append(f"  {i}. {q.question}")
+            if q.options:
+                q_lines.append(f"     Options: {', '.join(q.options)}")
+        context_parts.append("\n".join(q_lines))
+
+    system_prompt = "\n".join(context_parts)
+
+    # Use gemini-3-5-flash-minimal (CHEAP tier, fast, good for chat)
+    result = await execute_ai(message, model="gemini-3-5-flash-minimal", system_prompt=system_prompt)
+
+    if result.success:
+        from job_star.db import audit
+        await audit("checkin_discuss", {
+            "check_in_id": check_in_id,
+            "model": result.model,
+            "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
+        }, check_in.goal_id)
+        return {"response": result.content.strip()}
+
+    return {"response": "I'm having trouble connecting to the AI model right now. You can still respond to the check-in directly using the buttons below."}

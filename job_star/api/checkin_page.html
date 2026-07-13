@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Job-Star Check-In</title>
+<style>
+:root {
+  --bg: #0f1117; --card: #1a1d27; --border: #2a2d3a;
+  --text: #e0e0e8; --dim: #6b6f7e; --accent: #5b8def;
+  --green: #4caf50; --red: #ef5350; --yellow: #ffca28; --orange: #ff9800;
+  --user-bg: #1a2a3a; --ai-bg: #1a1d27;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: 'SF Mono','JetBrains Mono','Fira Code',monospace;
+  background: var(--bg); color: var(--text); font-size: 14px; padding: 16px; max-width: 800px; margin: 0 auto;
+}
+h1 { font-size:18px; font-weight:600; margin-bottom:8px; display:flex; align-items:center; gap:8px; }
+.dot { width:8px; height:8px; border-radius:50%; background:var(--accent); }
+h2 { font-size:13px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); margin:16px 0 8px; }
+.card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:14px; margin-bottom:12px; }
+.summary { line-height:1.6; white-space:pre-wrap; }
+.q-item { padding:10px 0; border-bottom:1px solid var(--border); }
+.q-item:last-child { border-bottom:none; }
+.q-label { font-weight:600; margin-bottom:4px; }
+.q-options { display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; }
+.q-opt { padding:4px 12px; border:1px solid var(--border); border-radius:4px; cursor:pointer; font-size:12px; }
+.q-opt:hover { border-color:var(--accent); }
+.q-opt.selected { background:var(--accent); border-color:var(--accent); }
+.q-opt.selected { color:#fff; }
+.badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600; }
+.b-progress{background:#1a3a1a;color:var(--green)} .b-completion{background:#1a3a1a;color:var(--green)}
+.b-clarification{background:#3a2a1a;color:var(--yellow)} .b-milestone{background:#1a2a3a;color:var(--accent)}
+.b-sent{background:#2a2a1a;color:var(--yellow)} .b-responded{background:#1a3a1a;color:var(--green)}
+.b-actioned{background:#1a1a2a;color:var(--dim)}
+/* Chat */
+#chat { max-height:300px; overflow-y:auto; margin-bottom:8px; }
+.msg { padding:10px 14px; border-radius:8px; margin-bottom:8px; max-width:90%; }
+.msg-user { background:var(--user-bg); margin-left:auto; text-align:right; }
+.msg-ai { background:var(--card); border:1px solid var(--border); }
+.msg-system { color:var(--dim); font-size:12px; text-align:center; padding:4px; }
+.input-row { display:flex; gap:8px; margin-top:8px; }
+#chat-input { flex:1; padding:10px; background:var(--card); border:1px solid var(--border); border-radius:6px; color:var(--text); font-family:inherit; font-size:13px; }
+#chat-input:focus { outline:none; border-color:var(--accent); }
+button { padding:8px 16px; border:1px solid var(--border); border-radius:6px; background:var(--card); color:var(--text); cursor:pointer; font-family:inherit; font-size:13px; }
+button:hover { border-color:var(--accent); }
+button:disabled { opacity:0.5; cursor:default; }
+.btn-primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+.btn-accept { background:var(--green); border-color:var(--green); color:#fff; }
+.btn-reject { background:var(--red); border-color:var(--red); color:#fff; }
+.actions { margin-top:16px; display:flex; gap:8px; flex-wrap:wrap; }
+#feedback-box { width:100%; padding:10px; background:var(--card); border:1px solid var(--border); border-radius:6px; color:var(--text); font-family:inherit; font-size:13px; margin-top:8px; display:none; }
+.result { padding:12px; border-radius:8px; margin-top:12px; display:none; }
+.result-success { background:#1a3a1a; border:1px solid var(--green); }
+.result-error { background:#3a1a1a; border:1px solid var(--red); }
+.link { color:var(--accent); text-decoration:none; }
+.link:hover { text-decoration:underline; }
+.dim { color:var(--dim); }
+</style>
+</head>
+<body>
+<h1><span class="dot" id="status-dot"></span> <span id="title">Loading…</span></h1>
+<div id="content">
+  <div class="card"><p class="dim">Fetching check-in details…</p></div>
+</div>
+
+<script>
+const API = window.location.origin + '/api/v1';
+const checkInId = window.location.pathname.split('/').pop();
+
+async function loadCheckIn() {
+  try {
+    const r = await fetch(`${API}/check-ins/${checkInId}`);
+    if (!r.ok) throw new Error(r.status);
+    const ci = await r.json();
+    renderCheckIn(ci);
+  } catch(e) {
+    document.getElementById('content').innerHTML = '<div class="card"><p style="color:var(--red)">Could not load check-in. It may not exist or the API is down.</p></div>';
+  }
+}
+
+function renderCheckIn(ci) {
+  document.getElementById('title').textContent = ci.type.charAt(0).toUpperCase() + ci.type.slice(1) + ' Check-In';
+  document.title = `Job-Star: ${ci.type}`;
+
+  const typeBadges = {
+    progress: ['b-progress', '📊 Progress'],
+    clarification: ['b-clarification', '❓ Clarification'],
+    milestone: ['b-milestone', '🏁 Milestone'],
+    completion: ['b-completion', '✅ Completion']
+  };
+  const [badgeClass, badgeText] = typeBadges[ci.type] || ['b-progress', ci.type];
+  const statusBadge = ci.is_pending
+    ? '<span class="badge b-sent">awaiting your response</span>'
+    : `<span class="badge b-${ci.status}">${ci.status}</span>`;
+
+  let html = `<div class="card"><span class="badge ${badgeClass}">${badgeText}</span> ${statusBadge}</div>`;
+
+  if (ci.progress_summary) {
+    html += `<h2>Progress Summary</h2><div class="card summary">${esc(ci.progress_summary)}</div>`;
+  }
+  if (ci.results) {
+    html += `<h2>Results</h2><div class="card summary">${esc(ci.results)}</div>`;
+  }
+  if (ci.next_steps) {
+    html += `<h2>Next Steps</h2><div class="card summary">${esc(ci.next_steps)}</div>`;
+  }
+
+  // Questions
+  if (ci.questions && ci.questions.length > 0) {
+    html += '<h2>Questions</h2><div class="card">';
+    ci.questions.forEach((q, i) => {
+      html += `<div class="q-item"><div class="q-label">${i+1}. ${esc(q.question)}</div>`;
+      if (q.options && q.options.length > 0) {
+        html += '<div class="q-options">';
+        q.options.forEach((opt, j) => {
+          const sel = q.answer === opt ? ' selected' : '';
+          html += `<div class="q-opt${sel}" data-qid="${q.id}" data-val="${esc(opt)}" onclick="selectOpt(this)">${esc(opt)}</div>`;
+        });
+        html += '</div>';
+      }
+      if (q.answer) {
+        html += `<p class="dim" style="margin-top:4px">→ Your answer: ${esc(q.answer)}</p>`;
+      }
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+
+  // Chat interface
+  if (ci.is_pending) {
+    html += `
+      <h2>Discuss with Job-Star</h2>
+      <div class="card">
+        <div id="chat"></div>
+        <div class="input-row">
+          <input id="chat-input" type="text" placeholder="Ask about this check-in, the goal, or what to do..." onkeydown="if(event.key==='Enter')sendChat()">
+          <button onclick="sendChat()" id="chat-btn">Send</button>
+        </div>
+      </div>
+    `;
+
+    // Response actions
+    html += `<h2>Your Response</h2><div class="card">`;
+    html += `<textarea id="feedback-box" placeholder="Optional: add feedback for job-star..."></textarea>`;
+    html += `<div class="actions">`;
+    if (ci.type === 'completion') {
+      html += `<button class="btn-accept" onclick="submitResponse('Accept')">✓ Accept</button>`;
+      html += `<button class="btn-reject" onclick="submitResponse('Needs revision')">✗ Needs Revision</button>`;
+    } else {
+      html += `<button class="btn-primary" onclick="submitResponse('')">Submit Response</button>`;
+    }
+    html += `</div></div>`;
+  } else if (ci.response) {
+    html += `<h2>Your Response</h2><div class="card summary">${esc(ci.response)}</div>`;
+  }
+
+  html += `<div class="result" id="result"></div>`;
+  document.getElementById('content').innerHTML = html;
+
+  // Initialize chat
+  if (ci.is_pending) {
+    addSystemMessage('Ask me anything about this check-in. I can explain the progress, the questions, or help you decide.');
+  }
+}
+
+function selectOpt(el) {
+  // Deselect siblings
+  el.parentElement.querySelectorAll('.q-opt').forEach(s => s.classList.remove('selected'));
+  el.classList.add('selected');
+}
+
+async function sendChat() {
+  const input = document.getElementById('chat-input');
+  const btn = document.getElementById('chat-btn');
+  const text = input.value.trim();
+  if (!text) return;
+
+  addUserMessage(text);
+  input.value = '';
+  btn.disabled = true;
+  input.placeholder = 'Thinking...';
+
+  try {
+    const r = await fetch(`${API}/check-ins/${checkInId}/discuss`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({message: text})
+    });
+    if (!r.ok) throw new Error(r.status);
+    const data = await r.json();
+    addAIMessage(data.response);
+  } catch(e) {
+    addSystemMessage('Could not reach the discussion endpoint. Make sure the API is running.');
+  }
+
+  btn.disabled = false;
+  input.placeholder = 'Ask about this check-in...';
+  input.focus();
+}
+
+async function submitResponse(answer) {
+  const feedback = document.getElementById('feedback-box').value.trim();
+  const decisions = [];
+
+  // Collect selected options
+  document.querySelectorAll('.q-opt.selected').forEach(el => {
+    decisions.push({question_id: el.dataset.qid, answer: el.dataset.val});
+  });
+
+  // If an explicit answer was given (accept/reject), find the approval question
+  if (answer) {
+    // Find approval questions and add the answer
+    const ci = await fetch(`${API}/check-ins/${checkInId}`).then(r => r.json());
+    if (ci.questions) {
+      for (const q of ci.questions) {
+        if (q.type === 'approval' && !decisions.find(d => d.question_id === q.id)) {
+          decisions.push({question_id: q.id, answer: answer});
+        }
+      }
+    }
+  }
+
+  const body = {response: feedback || answer || 'Submitted via web interface', decisions: decisions};
+  const result = document.getElementById('result');
+
+  try {
+    const r = await fetch(`${API}/check-ins/${checkInId}/respond`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    if (!r.ok) throw new Error(r.status);
+    const data = await r.json();
+
+    result.style.display = 'block';
+    result.className = 'result result-success';
+    result.innerHTML = `<strong>✓ Response submitted.</strong> ${data.actions && data.actions.length ? 'Actions: ' + data.actions.join(', ') : ''}`;
+
+    // Reload to show updated state
+    setTimeout(() => loadCheckIn(), 2000);
+  } catch(e) {
+    result.style.display = 'block';
+    result.className = 'result result-error';
+    result.innerHTML = '<strong>✗ Could not submit response.</strong> The API may be down.';
+  }
+}
+
+function addUserMessage(text) {
+  const chat = document.getElementById('chat');
+  chat.innerHTML += `<div class="msg msg-user">${esc(text)}</div>`;
+  chat.scrollTop = chat.scrollHeight;
+}
+function addAIMessage(text) {
+  const chat = document.getElementById('chat');
+  chat.innerHTML += `<div class="msg msg-ai">${esc(text)}</div>`;
+  chat.scrollTop = chat.scrollHeight;
+}
+function addSystemMessage(text) {
+  const chat = document.getElementById('chat');
+  chat.innerHTML += `<div class="msg-system">${esc(text)}</div>`;
+  chat.scrollTop = chat.scrollHeight;
+}
+function esc(s) { const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
+
+loadCheckIn();
+</script>
+</body>
+</html>
