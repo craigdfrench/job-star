@@ -456,21 +456,23 @@ Generate the changes now."""
                 test_feedback = last_test_result.output
                 continue
 
-        # Budget exhausted — create PR with failing tests
+        # Budget exhausted — create PR with failing tests for human review, but
+        # mark the step as failed so the orchestrator does not treat it as done.
         if last_test_result and all_written_files:
             ok, commit_msg = self._commit_and_push(
                 work_dir, branch,
                 f"job-star: {step.title} (tests failing, needs review)",
                 all_written_files,
             )
+            pr_url = ""
             if ok:
                 ok, pr_url = self._create_pr(work_dir, goal, branch, last_test_result)
-                return ExecutionResult(
-                    content=f"Tests still failing after {self.max_test_retries} attempts. PR created with failing tests: {pr_url}\n\nLast test output:\n{last_test_result.output[:1000]}",
-                    model=routing.model,
-                    success=True,
-                    x_gatehouse=result.x_gatehouse if result else {},
-                )
+            return ExecutionResult(
+                success=False,
+                error=f"Tests still failing after {self.max_test_retries} attempts. PR created with failing tests: {pr_url}\n\nLast test output:\n{last_test_result.output[:1000]}",
+                model=routing.model,
+                x_gatehouse=result.x_gatehouse if result else {},
+            )
 
         return ExecutionResult(
             success=False,
