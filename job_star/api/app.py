@@ -183,3 +183,12 @@ async def root():
         "health": "/health",
         "api_prefix": "/api/v1",
     }
+
+
+@app.get("/checkin/{check_in_id}")
+async def checkin_page(check_in_id: str):
+    """Interactive check-in discussion page - no auth (tailnet boundary)."""
+    from pathlib import Path
+    from fastapi.responses import HTMLResponse
+    html = Path(__file__).parent / "checkin_page.html"
+    return HTMLResponse(html.read_text())
