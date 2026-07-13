@@ -175,10 +175,10 @@ def test_x_gatehouse_parsing_zero_rated():
     }
     monitor.record_success("kimi-k2-7", tokens=100, x_gatehouse=xg)
 
-    # kimi-k2-7 is zero-rated (included_quota) → tier_for should be FREE
+    # kimi-k2-7 is zero-rated (included_quota) → tier_for should be QUOTA_FREE
     from job_star.gatehouse.monitor import _cost_class_to_tier, ModelTier
-    assert _cost_class_to_tier("included_quota") == ModelTier.FREE
-    assert monitor.tier_for("kimi-k2-7") == ModelTier.FREE
+    assert _cost_class_to_tier("included_quota") == ModelTier.QUOTA_FREE
+    assert monitor.tier_for("kimi-k2-7") == ModelTier.QUOTA_FREE
     assert not monitor.is_expensive("kimi-k2-7")
 
     # Quota status should be available

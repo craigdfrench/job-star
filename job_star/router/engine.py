@@ -47,7 +47,7 @@ class ModelInfo:
     @property
     def is_allowed_for_routing(self) -> bool:
         """Whether this model can be selected automatically."""
-        return self.tier in ("free", "cheap")
+        return self.tier in ("free", "quota_free", "cheap")
 
 
 MODEL_REGISTRY: list[ModelInfo] = [
@@ -59,7 +59,7 @@ MODEL_REGISTRY: list[ModelInfo] = [
         cost_per_1k_output=0.0,
         availability=0.90,
         context_window=128_000,
-        tier="free",
+        tier="quota_free",
         capabilities=["text", "code"],
     ),
     ModelInfo(
@@ -70,7 +70,7 @@ MODEL_REGISTRY: list[ModelInfo] = [
         cost_per_1k_output=0.004,
         availability=0.95,
         context_window=1_000_000,
-        tier="free",
+        tier="quota_free",
         capabilities=["text", "code", "reasoning"],
     ),
     ModelInfo(
@@ -81,7 +81,7 @@ MODEL_REGISTRY: list[ModelInfo] = [
         cost_per_1k_output=0.0,
         availability=0.85,
         context_window=128_000,
-        tier="free",
+        tier="quota_free",
         capabilities=["text", "vision", "code"],
     ),
 ]
@@ -108,7 +108,7 @@ async def _build_live_candidates(
 
         # Skip expensive models unless explicitly allowed
         tier = gateway_monitor.tier(model_id)
-        if not allow_expensive and tier not in ("free", "cheap"):
+        if not allow_expensive and tier not in ("free", "quota_free", "cheap"):
             continue
 
         if not gateway_monitor.is_available(model_id):

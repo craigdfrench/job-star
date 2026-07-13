@@ -48,10 +48,11 @@ GATEHOUSE_CONFIG_PATHS = [
 
 class ModelTier(str, Enum):
     """Cost tier of a model."""
-    FREE = "free"             # free to use, no quota impact
-    CHEAP = "cheap"           # very low cost, safe for idle work
-    STANDARD = "standard"     # normal cost
-    PREMIUM = "premium"       # expensive, only use when requested
+    FREE = "free"              # truly free, no quota, no cost (e.g. local model)
+    QUOTA_FREE = "quota_free"  # zero-rated but consumes quota pools (included_quota)
+    CHEAP = "cheap"            # very low cost, safe for idle work
+    STANDARD = "standard"      # normal cost
+    PREMIUM = "premium"        # expensive, only use when requested
 
 
 class CostKind(str, Enum):
@@ -67,40 +68,41 @@ class CostKind(str, Enum):
 # monitor also attempts to load /etc/gatehouse/config.json for authoritative
 # `free_kind`/`quota_pools` metadata. Updates are cheap.
 TIER_OVERRIDES: dict[str, ModelTier] = {
-    # Ollama-hosted models are free
-    "ollama/glm-5.2": ModelTier.FREE,
-    "ollama/glm-5": ModelTier.FREE,
-    "ollama/glm-5.1": ModelTier.FREE,
-    "ollama/glm-4.7": ModelTier.FREE,
-    "ollama/gemini-3-flash-preview": ModelTier.FREE,
-    "ollama/deepseek-v4-flash": ModelTier.FREE,
-    "ollama/deepseek-v4-pro": ModelTier.FREE,
-    "ollama/deepseek-v3.2": ModelTier.FREE,
-    "ollama/deepseek-v3.1:671b": ModelTier.FREE,
-    "ollama/gemma3:4b": ModelTier.FREE,
-    "ollama/gemma3:12b": ModelTier.FREE,
-    "ollama/gemma3:27b": ModelTier.FREE,
-    "ollama/gemma4:31b": ModelTier.FREE,
-    "ollama/gpt-oss:20b": ModelTier.FREE,
-    "ollama/gpt-oss:120b": ModelTier.FREE,
-    "ollama/kimi-k2.5": ModelTier.FREE,
-    "ollama/kimi-k2.6": ModelTier.FREE,
-    "ollama/kimi-k2.7-code": ModelTier.FREE,
-    "ollama/minimax-m2.1": ModelTier.FREE,
-    "ollama/minimax-m2.5": ModelTier.FREE,
-    "ollama/minimax-m2.7": ModelTier.FREE,
-    "ollama/minimax-m3": ModelTier.FREE,
-    "ollama/ministral-3:3b": ModelTier.FREE,
-    "ollama/ministral-3:14b": ModelTier.FREE,
-    "ollama/devstral-2:123b": ModelTier.FREE,
-    "ollama/devstral-small-2:24b": ModelTier.FREE,
-    # Z-AI free-ish models
-    "glm-5-2": ModelTier.FREE,
-    "glm-5-2-1m": ModelTier.FREE,
-    "glm-5-2-max": ModelTier.FREE,
-    "glm-5-2-max-1m": ModelTier.FREE,
-    "glm-5-2-none": ModelTier.FREE,
-    "glm-5-2-none-1m": ModelTier.FREE,
+    # Ollama-hosted models (consume ollama_session/ollama_weekly quota pools)
+    "ollama/glm-5.2": ModelTier.QUOTA_FREE,
+    "ollama/glm-5": ModelTier.QUOTA_FREE,
+    "ollama/glm-5.1": ModelTier.QUOTA_FREE,
+    "ollama/glm-4.7": ModelTier.QUOTA_FREE,
+    "ollama/gemini-3-flash-preview": ModelTier.QUOTA_FREE,
+    "ollama/deepseek-v4-flash": ModelTier.QUOTA_FREE,
+    "ollama/deepseek-v4-pro": ModelTier.QUOTA_FREE,
+    "ollama/deepseek-v3.2": ModelTier.QUOTA_FREE,
+    "ollama/deepseek-v3.1:671b": ModelTier.QUOTA_FREE,
+    "ollama/gemma3:4b": ModelTier.QUOTA_FREE,
+    "ollama/gemma3:12b": ModelTier.QUOTA_FREE,
+    "ollama/gemma3:27b": ModelTier.QUOTA_FREE,
+    "ollama/gemma4:31b": ModelTier.QUOTA_FREE,
+    "ollama/gpt-oss:20b": ModelTier.QUOTA_FREE,
+    "ollama/gpt-oss:120b": ModelTier.QUOTA_FREE,
+    "ollama/kimi-k2.5": ModelTier.QUOTA_FREE,
+    "ollama/kimi-k2.6": ModelTier.QUOTA_FREE,
+    "ollama/kimi-k2.7-code": ModelTier.QUOTA_FREE,
+    "ollama/minimax-m2.1": ModelTier.QUOTA_FREE,
+    "ollama/minimax-m2.5": ModelTier.QUOTA_FREE,
+    "ollama/minimax-m2.7": ModelTier.QUOTA_FREE,
+    "ollama/minimax-m3": ModelTier.QUOTA_FREE,
+    "ollama/ministral-3:3b": ModelTier.QUOTA_FREE,
+    "ollama/ministral-3:14b": ModelTier.QUOTA_FREE,
+    "ollama/devstral-2:123b": ModelTier.QUOTA_FREE,
+    "ollama/devstral-small-2:24b": ModelTier.QUOTA_FREE,
+    # Z-AI included_quota models (windsurf quota pools)
+
+    "glm-5-2": ModelTier.QUOTA_FREE,
+    "glm-5-2-1m": ModelTier.QUOTA_FREE,
+    "glm-5-2-max": ModelTier.QUOTA_FREE,
+    "glm-5-2-max-1m": ModelTier.QUOTA_FREE,
+    "glm-5-2-none": ModelTier.QUOTA_FREE,
+    "glm-5-2-none-1m": ModelTier.QUOTA_FREE,
     # Gemini flash is cheap
     "gemini-3-5-flash-high": ModelTier.CHEAP,
     "gemini-3-5-flash-low": ModelTier.CHEAP,
@@ -254,13 +256,13 @@ class GatewayMonitor:
 
         # Family prefix match
         if model_id.startswith("ollama/"):
-            return ModelTier.FREE
+            return ModelTier.QUOTA_FREE
         if model_id.startswith("claude-opus") or model_id.startswith("claude-5-fable"):
             return ModelTier.PREMIUM
         if model_id.startswith("claude-sonnet-"):
             return ModelTier.STANDARD
         if model_id.startswith("glm-5"):
-            return ModelTier.FREE
+            return ModelTier.QUOTA_FREE
         if model_id.startswith("gemini-3-5-flash") or model_id.startswith("deepseek"):
             return ModelTier.CHEAP
         # Unknown model: conservative default
@@ -282,7 +284,7 @@ class GatewayMonitor:
         if allow_expensive:
             return True
         tier = self.tier_for(model_id)
-        return tier in (ModelTier.FREE, ModelTier.CHEAP)
+        return tier in (ModelTier.QUOTA_FREE, ModelTier.CHEAP)
 
     def cost_kind(self, model_id: str) -> CostKind:
         """Return the gatehouse cost kind for a model."""
@@ -455,12 +457,12 @@ class GatewayMonitor:
             tier = self.tier_for(model_id)
             # Score: tier priority, then capability overlap, then context length
             tier_score = {
-                ModelTier.FREE: 1000,
+                ModelTier.QUOTA_FREE: 1000,
                 ModelTier.CHEAP: 500,
                 ModelTier.STANDARD: 100,
                 ModelTier.PREMIUM: 0,
             }[tier]
-            if prefer_free and tier == ModelTier.FREE:
+            if prefer_free and tier == ModelTier.QUOTA_FREE:
                 tier_score += 1000
 
             overlap = len(preferred_capabilities & set(caps.keys()))
@@ -571,8 +573,12 @@ def _is_quota_error(error_str: str) -> bool:
 def _cost_class_to_tier(cost_class: str) -> ModelTier:
     """Map a gatehouse cost_class (from x_gatehouse) to a ModelTier."""
     cc = (cost_class or "").lower()
-    # Zero-rated / included quota / promotional = free to use
-    if cc in ("included_quota", "included_unlimited", "promotional_free", "zero_rated", "free"):
+    # Included quota = zero-rated but consumes quota pools (windsurf, ollama, etc)
+    # These are free in dollar terms but NOT unlimited — quota can exhaust.
+    if cc in ("included_quota", "zero_rated"):
+        return ModelTier.QUOTA_FREE
+    # Truly unlimited / promotional free
+    if cc in ("included_unlimited", "promotional_free", "free"):
         return ModelTier.FREE
     # Retail / paid = premium
     if cc in ("retail", "paid", "premium", "standard"):
