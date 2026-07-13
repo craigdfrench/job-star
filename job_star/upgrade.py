@@ -435,7 +435,6 @@ async def check_health() -> dict:
         pool = await get_pool()
         async with pool.acquire() as conn:
             await conn.fetchval("SELECT 1")
-        await close_pool()
         return {"healthy": True, "details": {"database": "ok"}, "source": "db-direct"}
     except Exception as e:
         return {"healthy": False, "details": {"error": str(e)}, "source": "db-failed"}
@@ -452,7 +451,6 @@ async def get_schema_version() -> int:
             return await conn.fetchval("SELECT max(version) FROM schema_migrations") or 0
         except Exception:
             return 0
-    await close_pool()
 
 
 async def apply_versioned_migrations() -> list[str]:
@@ -505,7 +503,6 @@ async def apply_versioned_migrations() -> list[str]:
                 applied.append(f"Applied migration {version:03d}: {name}")
             except Exception as e:
                 applied.append(f"FAILED migration {version:03d}: {name} — {e}")
-    await close_pool()
     return applied
 
 
@@ -517,7 +514,6 @@ async def signal_worker_drain(worker_id: str) -> None:
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("UPDATE worker_registry SET draining = TRUE WHERE worker_id = $1", worker_id)
-    await close_pool()
 
 
 async def wait_for_worker_drain(worker_id: str, timeout: int = 120) -> bool:
@@ -529,10 +525,8 @@ async def wait_for_worker_drain(worker_id: str, timeout: int = 120) -> bool:
                 "SELECT current_step_id FROM worker_registry WHERE worker_id = $1", worker_id,
             )
         if not row or not row["current_step_id"]:
-            await close_pool()
             return True
         time.sleep(2)
-    await close_pool()
     return False
 
 
@@ -551,7 +545,7 @@ def _service_worker_id(svc: str) -> str | None:
     return None
 
 
-def rolling_restart_worker(svc: str, drain_timeout: int = 90) -> bool:
+async def rolling_restart_worker(svc: str, drain_timeout: int = 90) -> bool:
     """Blue-green restart: drain via DB, then systemctl restart."""
     worker_id = _service_worker_id(svc)
     if not worker_id:
@@ -559,9 +553,9 @@ def rolling_restart_worker(svc: str, drain_timeout: int = 90) -> bool:
         return wait_for_service(svc, timeout=15)
 
     print(f"  │  Signaling {worker_id} to drain...")
-    asyncio.run(signal_worker_drain(worker_id))
+    await signal_worker_drain(worker_id)
     print(f"  │  Waiting for drain (timeout {drain_timeout}s)...")
-    drained = asyncio.run(wait_for_worker_drain(worker_id, timeout=drain_timeout))
+    drained = await wait_for_worker_drain(worker_id, timeout=drain_timeout)
     if drained:
         print(f"  │  Drained")
     else:
@@ -671,7 +665,6 @@ async def run_upgrade(
         await close_pool()
         return 0
 
-    # ─── 2. DRAIN ─────────────────────────────────────────────────────
     if dry_run:
         print("  ┌─ 2. REAP (DRY RUN)")
         print(f"  │  Would reap {results['orphaned_steps']} orphaned step(s)")
@@ -694,36 +687,14 @@ async def run_upgrade(
         await close_pool()
         return 0
 
-    print("  ┌─ 2. DRAIN — stopping workers")
-    print("  │")
-    # Stop workers first (API last — it's stateless)
-    worker_services = [s for s in SERVICES if "worker" in s]
-    for svc in worker_services:
-        status = service_status(svc)
-        if status == "active":
-            print(f"  │  Stopping {svc}...")
-            stop_service(svc)
-            time.sleep(1)
-        else:
-            print(f"  │  {svc} already stopped.")
-
-    # Wait a moment for in-progress steps to be abandoned
-    print(f"  │  Waiting 3s for in-flight AI calls to finish...")
-    time.sleep(3)
-    print("  │")
-    print("  └─ ✓ Workers stopped")
-    print()
-
-    # ─── 3. REAP ───────────────────────────────────────────────────────
-    print("  ┌─ 3. REAP — resetting orphaned steps")
+    print("  ┌─ 2. REAP — resetting orphaned steps")
     reaped = await reap_stale_steps()
     if reaped > 0:
-        print(f"  │  ✓ Reaped {reaped} orphaned step(s) → reset to pending")
+        print(f"  │  Reaped {reaped} orphaned step(s) — reset to pending")
     else:
         print(f"  │  No orphaned steps to reap.")
     print("  └─")
     print()
-
     # ─── 3. MIGRATE ────────────────────────────────────────────────────
     print("  ┌─ 3. MIGRATE — applying versioned schema migrations")
     current_ver = await get_schema_version()
@@ -761,7 +732,7 @@ async def run_upgrade(
     worker_services = [s for s in SERVICES if "worker" in s]
     for svc in worker_services:
         print(f"  │  [{svc}] blue-green rolling restart...")
-        if rolling_restart_worker(svc):
+        if await rolling_restart_worker(svc):
             print(f"  │  [{svc}] active with new code")
         else:
             print(f"  │  [{svc}] FAILED")
@@ -829,6 +800,7 @@ async def run_upgrade(
         "services": {svc: service_status(svc) for svc in SERVICES},
     })
 
+    await close_pool()
     return 0 if all_ok else 2
 
 

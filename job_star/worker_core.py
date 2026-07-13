@@ -11,7 +11,7 @@ import json
 import os
 from typing import Optional
 
-from .db import claim_next_step_any_goal, claim_job_queue_item, complete_job, close_pool, publish_event
+from .db import claim_next_step_any_goal, claim_job_queue_item, complete_job, close_pool, publish_event, get_pool
 from .models import Domain, Urgency
 from .orchestrator import Orchestrator
 
