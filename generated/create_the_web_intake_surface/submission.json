@@ -1,0 +1,215 @@
+import { Router, type Request, type Response } from 'express';
+import multer from 'multer';
+import { z } from 'zod';
+import { intakeStore, type IntakeSubmission, type StoredAsset } from '../storage.js';
+
+const router = Router();
+
+// Limits — generous enough for screenshots + short voice memos.
+const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB per file
+const MAX_FILES = 12;
+const MAX_TOTAL_FIELD_BYTES = 4 * 1024 * 1024; // 4 MB of text fields
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: MAX_FILE_SIZE,
+    files: MAX_FILES,
+    fields: 20,
+    fieldSize: 1 * 1024 * 1024,
+    parts: 40,
+  },
+});
+
+// Allowed MIME types — defensive; we trust the client only loosely.
+const ALLOWED_MIME = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+  'image/svg+xml',
+  'audio/webm',
+  'audio/ogg',
+  'audio/wav',
+  'audio/x-wav',
+  'audio/mpeg',
+  'audio/mp4',
+  'audio/aac',
+  'application/pdf',
+  'text/plain',
+  'text/markdown',
+  'application/json',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+]);
+
+const TagsSchema = z
+  .array(z.string().trim().min(1).max(40))
+  .max(20)
+  .optional()
+  .default([]);
+
+const IntakeBodySchema = z.object({
+  title: z.string().trim().min(1, 'title is required').max(200),
+  description: z.string().trim().max(20_000).optional(),
+  jobUrl: z.string().url().max(2000).optional().or(z.literal('')),
+  company: z.string().trim().max(200).optional(),
+  role: z.string().trim().max(200).optional(),
+  tags: TagsSchema,
+  clientSubmissionId: z.string().trim().max(100).optional(),
+  // Free-form metadata blob (must be valid JSON string from multipart).
+  metadata: z.string().max(MAX_TOTAL_FIELD_BYTES).optional(),
+});
+
+function parseTags(value: unknown): string[] {
+  if (Array.isArray(value)) return value as string[];
+  if (typeof value === 'string') {
+    // multer delivers repeated fields as arrays; a single string is one tag.
+    return [value];
+  }
+  return [];
+}
+
+function parseMetadata(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'string' || value.length === 0) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+interface MulterFile {
+  fieldname: string;
+  originalname: string;
+  mimetype: string;
+  size: number;
+  buffer: Buffer;
+}
+
+router.post('/api/intake', upload.any(), async (req: Request, res: Response) => {
+  try {
+    const files = (req.files as MulterFile[] | undefined) ?? [];
+
+    // Pre-validate file types before doing any disk I/O.
+    for (const f of files) {
+      if (!ALLOWED_MIME.has(f.mimetype.toLowerCase())) {
+        return res.status(400).json({
+          error: 'unsupported_file_type',
+          message: `File "${f.originalname}" has unsupported type "${f.mimetype}".`,
+        });
+      }
+    }
+
+    const parsed = IntakeBodySchema.safeParse({
+      title: req.body.title,
+      description: req.body.description,
+      jobUrl: req.body.jobUrl,
+      company: req.body.company,
+      role: req.body.role,
+      tags: parseTags(req.body.tags),
+      clientSubmissionId: req.body.clientSubmissionId,
+      metadata: req.body.metadata,
+    });
+
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: 'validation_error',
+        message: 'Invalid intake payload.',
+        issues: parsed.error.issues,
+      });
+    }
+
+    const body = parsed.data;
+    await intakeStore.ensureRoot();
+
+    // Resolve submission id, honoring clientSubmissionId for retries.
+    let submissionId: string;
+    if (body.clientSubmissionId && (await intakeStore.exists(body.clientSubmissionId))) {
+      // Idempotent retry: overwrite by reusing the same id.
+      submissionId = body.clientSubmissionId;
+    } else {
+      submissionId = body.clientSubmissionId ?? intakeStore.newId();
+    }
+
+    // Persist assets.
+    const assets: StoredAsset[] = [];
+    let screenshotIdx = 0;
+    let voiceIdx = 0;
+    let fileIdx = 0;
+
+    for (const f of files) {
+      const lowerField = f.fieldname.toLowerCase();
+      let role: StoredAsset['role'];
+      let idx: number;
+      if (lowerField.includes('screenshot') || f.mimetype.startsWith('image/')) {
+        role = 'screenshot';
+        screenshotIdx += 1;
+        idx = screenshotIdx;
+      } else if (lowerField.includes('voice') || lowerField.includes('audio') || f.mimetype.startsWith('audio/')) {
+        role = 'voice';
+        voiceIdx += 1;
+        idx = voiceIdx;
+      } else {
+        role = 'file';
+        fileIdx += 1;
+        idx = fileIdx;
+      }
+
+      const stored = await intakeStore.writeAsset(
+        submissionId,
+        {
+          originalname: f.originalname,
+          mimetype: f.mimetype,
+          size: f.size,
+          buffer: f.buffer,
+        },
+        f.fieldname,
+        idx,
+      );
+      // Override role classification from the route-level logic for consistency.
+      stored.role = role;
+      assets.push(stored);
+    }
+
+    const submission: IntakeSubmission = {
+      id: submissionId,
+      clientSubmissionId: body.clientSubmissionId,
+      createdAt: new Date().toISOString(),
+      title: body.title,
+      description: body.description,
+      jobUrl: body.jobUrl && body.jobUrl !== '' ? body.jobUrl : undefined,
+      company: body.company,
+      role: body.role,
+      tags: body.tags,
+      metadata: parseMetadata(body.metadata),
+      assets,
+    };
+
+    const manifestPath = await intakeStore.writeManifest(submission);
+
+    return res.status(201).json({
+      ok: true,
+      id: submission.id,
+      manifestPath,
+      assets: submission.assets.map((a) => ({
+        role: a.role,
+        filename: a.filename,
+        originalName: a.originalName,
+        mimeType: a.mimeType,
+        size: a.size,
+        relativePath: a.relativePath,
+      })),
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'unknown error';
+    console.error('[intake] failed:', err);
+    return res.status(500).json({ error: 'internal_error', message });
+  }
+});
+
+export default router;

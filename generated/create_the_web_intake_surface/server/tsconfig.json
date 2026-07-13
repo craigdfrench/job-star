@@ -1,0 +1,308 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist",
+    "composite": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["node"]
+  },
+  "include": ["server", "../shared/src"],
+  "references": [{ "path": "../shared" }]
+}
+
+
+// --- DUPLICATE BLOCK ---
+
+/**
+ * Job-Star local intake server.
+ *
+ * A lightweight Express app that accepts rich intake payloads:
+ * screenshots, voice recordings, file uploads, and visual context metadata.
+ *
+ * Runs locally on http://localhost:4319 — a memorable port for "JS" (J=4th letter, S=19th).
+ */
+
+import express, { Request, Response, NextFunction } from "express";
+import cors from "cors";
+import multer from "multer";
+import path from "node:path";
+import fs from "node:fs";
+import { nanoid } from "nanoid";
+import type { IntakePayload, IntakeAck, ApiError } from "@job-star/shared";
+
+const PORT = Number(process.env.JOB_STAR_PORT ?? 4319);
+const STORAGE_DIR = path.resolve(
+  process.env.JOB_STAR_STORAGE ?? path.join(process.cwd(), "..", "storage"),
+);
+
+// Ensure storage subdirs exist
+const SUBDIRS = ["screenshots", "voice", "files"] as const;
+for (const dir of SUBDIRS) {
+  fs.mkdirSync(path.join(STORAGE_DIR, dir), { recursive: true });
+}
+
+const app = express();
+
+app.use(cors());
+app.use(express.json({ limit: "5mb" }));
+
+// --- Multer config: store uploads into categorized subdirs -------------------
+const storage = multer.diskStorage({
+  destination: (_req, file, cb) => {
+    let subdir = "files";
+    if (file.mimetype.startsWith("image/")) subdir = "screenshots";
+    else if (file.mimetype.startsWith("audio/")) subdir = "voice";
+    cb(null, path.join(STORAGE_DIR, subdir));
+  },
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname) || "";
+    cb(null, `${nanoid(12)}${ext}`);
+  },
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB per file
+});
+
+// --- Health check -----------------------------------------------------------
+app.get("/api/health", (_req: Request, res: Response) => {
+  res.json({ status: "ok", service: "job-star-intake", version: "0.1.0" });
+});
+
+// --- Intake submission ------------------------------------------------------
+// Accepts multipart/form-data:
+//   - field "payload": JSON-encoded IntakePayload (without asset binary)
+//   - field "screenshots": file(s)
+//   - field "voice": file(s)
+//   - field "files": file(s)
+app.post(
+  "/api/intake",
+  upload.fields([
+    { name: "screenshots", maxCount: 20 },
+    { name: "voice", maxCount: 10 },
+    { name: "files", maxCount: 20 },
+  ]),
+  (req: Request, res: Response) => {
+    let payload: IntakePayload;
+    try {
+      payload = JSON.parse(req.body.payload as string) as IntakePayload;
+    } catch {
+      const err: ApiError = { error: "invalid_payload", detail: "Could not parse JSON payload field." };
+      return res.status(400).json(err);
+    }
+
+    // Attach uploaded file metadata to the payload so downstream consumers
+    // know what actually landed on disk.
+    const files = (req.files as Record<string, Express.Multer.File[]>) ?? {};
+    const countFiles = (key: string) => files[key]?.length ?? 0;
+
+    const receivedAssetCount =
+      countFiles("screenshots") + countFiles("voice") + countFiles("files");
+
+    const ack: IntakeAck = {
+      id: payload.id || nanoid(),
+      accepted: true,
+      receivedAssetCount,
+      message: `Intake received with ${receivedAssetCount} asset(s).`,
+    };
+
+    // Persist a copy of the payload JSON alongside assets for replay/debug.
+    const intakeDir = path.join(STORAGE_DIR, "intakes");
+    fs.mkdirSync(intakeDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(intakeDir, `${ack.id}.json`),
+      JSON.stringify({ ...payload, ...ack, receivedFiles: files }, null, 2),
+    );
+
+    console.log(`[intake] ${ack.id} — ${ack.message}`);
+    res.status(201).json(ack);
+  },
+);
+
+// --- Error handler ----------------------------------------------------------
+app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+  console.error("[server error]", err);
+  const body: ApiError = { error: "server_error", detail: err.message };
+  res.status(500).json(body);
+});
+
+app.listen(PORT, () => {
+  console.log(`Job-Star intake server listening on http://localhost:${PORT}`);
+  console.log(`Storage dir: ${STORAGE_DIR}`);
+});
+
+
+// --- DUPLICATE BLOCK ---
+
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": ".",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["node"]
+  },
+  "include": ["**/*.ts"]
+}
+
+
+// --- DUPLICATE BLOCK ---
+
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
+import type { Readable } from 'node:stream';
+
+export interface StoredAsset {
+  /** Stable filename used on disk, e.g. `screenshot-1.png`. */
+  filename: string;
+  /** Original client-provided name. */
+  originalName: string;
+  /** MIME type from the upload. */
+  mimeType: string;
+  /** Size in bytes. */
+  size: number;
+  /** Logical role: screenshot | voice | file | unknown. */
+  role: 'screenshot' | 'voice' | 'file' | 'unknown';
+  /** Relative path from the intakes root, e.g. `intake_x/screenshot-1.png`. */
+  relativePath: string;
+}
+
+export interface IntakeSubmission {
+  id: string;
+  clientSubmissionId?: string;
+  createdAt: string;
+  title: string;
+  description?: string;
+  jobUrl?: string;
+  company?: string;
+  role?: string;
+  tags: string[];
+  metadata: Record<string, unknown>;
+  assets: StoredAsset[];
+}
+
+const INTAKES_ROOT = path.resolve(process.cwd(), 'intakes');
+
+/** Classify an upload into a logical role by mime type + fieldname. */
+function classifyAsset(fieldname: string, mimeType: string): StoredAsset['role'] {
+  const m = mimeType.toLowerCase();
+  const f = fieldname.toLowerCase();
+  if (f.includes('screenshot') || m.startsWith('image/')) return 'screenshot';
+  if (f.includes('voice') || f.includes('audio') || m.startsWith('audio/')) return 'voice';
+  if (f.includes('file')) return 'file';
+  return 'unknown';
+}
+
+/** Build a safe disk filename from an original name. */
+function safeBaseName(original: string): string {
+  const ext = path.extname(original) || '';
+  const base = path.basename(original, ext).replace(/[^a-zA-Z0-9-_]/g, '_').slice(0, 40) || 'asset';
+  return `${base}${ext.toLowerCase()}`;
+}
+
+export class IntakeStore {
+  constructor(private readonly rootDir: string = INTAKES_ROOT) {}
+
+  async ensureRoot(): Promise<void> {
+    await fs.mkdir(this.rootDir, { recursive: true });
+  }
+
+  /** Generate a new submission id. */
+  newId(): string {
+    const ts = Date.now().toString(36);
+    const rand = randomBytes(4).toString('hex');
+    return `intake_${ts}_${rand}`;
+  }
+
+  /** Resolve a submission directory, creating it if needed. */
+  private async submissionDir(id: string): Promise<string> {
+    const dir = path.join(this.rootDir, id);
+    await fs.mkdir(dir, { recursive: true });
+    return dir;
+  }
+
+  /** Persist a single uploaded file buffer/stream to the submission dir. */
+  async writeAsset(
+    submissionId: string,
+    file: { originalname: string; mimetype: string; size: number; buffer?: Buffer; stream?: Readable },
+    fieldname: string,
+    index: number,
+  ): Promise<StoredAsset> {
+    const dir = await this.submissionDir(submissionId);
+    const role = classifyAsset(fieldname, file.mimetype);
+    const base = safeBaseName(file.originalname);
+    const filename = `${role}-${index}-${base}`;
+    const fullPath = path.join(dir, filename);
+
+    if (file.buffer) {
+      await fs.writeFile(fullPath, file.buffer);
+    } else if (file.stream) {
+      await pipeline(file.stream, createWriteStream(fullPath));
+    } else {
+      throw new Error('Asset has neither buffer nor stream');
+    }
+
+    return {
+      filename,
+      originalName: file.originalname,
+      mimeType: file.mimetype,
+      size: file.size,
+      role,
+      relativePath: path.relative(this.rootDir, fullPath),
+    };
+  }
+
+  /** Write the submission.json manifest. */
+  async writeManifest(submission: IntakeSubmission): Promise<string> {
+    const dir = await this.submissionDir(submission.id);
+    const manifestPath = path.join(dir, 'submission.json');
+    await fs.writeFile(manifestPath, JSON.stringify(submission, null, 2), 'utf8');
+    return manifestPath;
+  }
+
+  /** Check whether a submission id already exists on disk. */
+  async exists(id: string): Promise<boolean> {
+    try {
+      const stat = await fs.stat(path.join(this.rootDir, id, 'submission.json'));
+      return stat.isFile();
+    } catch {
+      return false;
+    }
+  }
+
+  /** List all submission ids (sorted newest-first by directory mtime). */
+  async list(): Promise<string[]> {
+    try {
+      const entries = await fs.readdir(this.rootDir, { withFileTypes: true });
+      const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
+      const stamped = await Promise.all(
+        dirs.map(async (name) => {
+          const st = await fs.stat(path.join(this.rootDir, name));
+          return { name, mtime: st.mtimeMs };
+        }),
+      );
+      return stamped.sort((a, b) => b.mtime - a.mtime).map((s) => s.name);
+    } catch {
+      return [];
+    }
+  }
+
+  /** Read a manifest by id. */
+  async read(id: string): Promise<IntakeSubmission | null> {
+    try {
+      const raw = await fs.readFile(path.join(this.rootDir, id, 'submission.json'), 'utf8');
+      return JSON.parse(raw) as IntakeSubmission;
+    } catch {
+      return null;
+    }
+  }
+}
+
+export const intakeStore = new IntakeStore();

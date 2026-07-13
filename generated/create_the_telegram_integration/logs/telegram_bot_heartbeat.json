@@ -1,0 +1,22 @@
+python -m services.telegram_bot.run_polling
+
+
+// --- DUPLICATE BLOCK ---
+
+make run-telegram-bg
+
+
+// --- DUPLICATE BLOCK ---
+
+{
+  "pid": 12345,
+  "timestamp": 1700000000.0,
+  "messages_processed": 42,
+  "last_message_at": 1700000030.0
+}
+
+
+// --- DUPLICATE BLOCK ---
+
+TELEGRAM_BOT_LOG_FILE=logs/bot.log TELEGRAM_BOT_LOG_LEVEL=DEBUG \
+  make run-telegram

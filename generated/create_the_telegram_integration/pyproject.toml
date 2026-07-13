@@ -1,0 +1,15 @@
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -e services/telegram_bot
+
+
+// --- DUPLICATE BLOCK ---
+
+pip install "python-telegram-bot>=20.0"
+pip install "openai-whisper"      # for local transcription
+# or: pip install "openai>=1.0"   # for API transcription
+
+
+// --- DUPLICATE BLOCK ---
+
+python -m services.telegram_bot.run_polling

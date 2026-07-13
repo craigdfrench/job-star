@@ -1,0 +1,48 @@
+# ===========================================================================
+# Job-Star Default Configuration
+# ===========================================================================
+# This file holds the lowest-priority defaults.  They are overridden (in
+# priority order) by:
+#   1. Environment variables prefixed with JOBSTAR_IDLE_LOOP_
+#   2. The `overrides` dict passed to load_idle_loop_config()
+#
+# Values under the top-level `idle_loop` key map directly onto the
+# IdleLoopConfig dataclass fields.
+# ===========================================================================
+
+idle_loop:
+  # --- Timing ---------------------------------------------------------------
+  # How often (minutes) the loop wakes to look for opportunistic work.
+  check_interval_minutes: 5.0
+
+  # --- Resources ------------------------------------------------------------
+  # Minimum *available* resource percentages required before the loop will
+  # pull a step from the queue.  (0-100)
+  resource_thresholds:
+    min_cpu_available_pct: 30.0
+    min_memory_available_pct: 25.0
+    min_disk_available_pct: 15.0
+
+  # --- Concurrency ----------------------------------------------------------
+  # Hard ceiling on simultaneous idle-executed steps.
+  max_concurrent_idle_jobs: 2
+
+  # --- Execution ------------------------------------------------------------
+  step_timeout_minutes: 30.0
+  queue_name: "idle-opportunistic"
+  conflict_check_enabled: true
+
+  # --- Retry / Backoff ------------------------------------------------------
+  retry_policy:
+    max_retries: 2
+    backoff_base_seconds: 30.0
+    backoff_multiplier: 2.0
+    backoff_max_seconds: 1800.0   # 30 minutes
+
+  # --- Supervision ----------------------------------------------------------
+  heartbeat_interval_seconds: 15.0
+  stale_heartbeat_seconds: 120.0
+
+  # --- Master control -------------------------------------------------------
+  enabled: true
+  log_level: "INFO"

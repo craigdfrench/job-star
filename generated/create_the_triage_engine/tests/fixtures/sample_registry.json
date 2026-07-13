@@ -1,0 +1,93 @@
+{
+  "goals": [
+    {
+      "id": "G-0001",
+      "title": "Fix login page crash on Safari",
+      "domain": "web",
+      "urgency": "now",
+      "type": "bug",
+      "summary": "Users on Safari 17 experience a blank page after clicking login. React hydration error in console.",
+      "tags": ["auth", "safari", "frontend"],
+      "created_at": "2025-01-10T09:14:00Z",
+      "status": "active"
+    },
+    {
+      "id": "G-0002",
+      "title": "Add dark mode toggle to settings",
+      "domain": "web",
+      "urgency": "soon",
+      "type": "feature",
+      "summary": "Users have requested a dark mode preference. Store preference in localStorage and apply theme class to root.",
+      "tags": ["ui", "settings", "theme"],
+      "created_at": "2025-01-12T14:30:00Z",
+      "status": "active"
+    },
+    {
+      "id": "G-0003",
+      "title": "Investigate intermittent 500 errors on checkout API",
+      "domain": "backend",
+      "urgency": "now",
+      "type": "bug",
+      "summary": "Checkout endpoint returns HTTP 500 for roughly 2% of requests. Appears correlated with payment gateway timeouts.",
+      "tags": ["api", "checkout", "payments", "errors"],
+      "created_at": "2025-01-15T08:00:00Z",
+      "status": "active"
+    },
+    {
+      "id": "G-0004",
+      "title": "Write onboarding documentation for new hires",
+      "domain": "meta",
+      "urgency": "whenever",
+      "type": "task",
+      "summary": "Create an onboarding guide covering repo setup, dev environment, and deployment workflow.",
+      "tags": ["docs", "onboarding"],
+      "created_at": "2025-01-08T11:00:00Z",
+      "status": "active"
+    },
+    {
+      "id": "G-0005",
+      "title": "Upgrade PostgreSQL from 14 to 16",
+      "domain": "ops",
+      "urgency": "soon",
+      "type": "task",
+      "summary": "Plan and execute database major version upgrade. Includes backup, test migration, and rollback strategy.",
+      "tags": ["database", "infrastructure", "upgrade"],
+      "created_at": "2025-01-14T16:45:00Z",
+      "status": "active"
+    },
+    {
+      "id": "G-0006",
+      "title": "Set up CI pipeline for the mobile app",
+      "domain": "ops",
+      "urgency": "soon",
+      "type": "task",
+      "summary": "Configure GitHub Actions to build and test the React Native app on every PR. Run unit tests and e2e smoke test.",
+      "tags": ["ci", "mobile", "automation"],
+      "created_at": "2025-01-16T10:20:00Z",
+      "status": "active"
+    },
+    {
+      "id": "G-0007",
+      "title": "Refactor user permissions module",
+      "domain": "backend",
+      "urgency": "whenever",
+      "type": "refactor",
+      "summary": "The permissions module has grown unwieldy. Extract role logic into a dedicated service and add unit tests.",
+      "tags": ["permissions", "auth", "tech-debt"],
+      "created_at": "2025-01-09T13:10:00Z",
+      "status": "active"
+    },
+    {
+      "id": "G-0008",
+      "title": "Security audit of authentication flow",
+      "domain": "security",
+      "urgency": "soon",
+      "type": "task",
+      "summary": "Review OAuth flow for vulnerabilities. Check token storage, refresh handling, and session invalidation.",
+      "tags": ["security", "auth", "audit"],
+      "created_at": "2025-01-17T07:55:00Z",
+      "status": "active"
+    }
+  ],
+  "schema_version": "1.0"
+}

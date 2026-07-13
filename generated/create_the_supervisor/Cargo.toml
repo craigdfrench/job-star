@@ -1,0 +1,117 @@
+[package]
+name = "job-star-supervisor"
+version = "0.1.0"
+edition = "2021"
+description = "Supervision core for Job-Star: constraint enforcement, progress monitoring, loop/blocker detection, escalation"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1"
+
+
+// --- DUPLICATE BLOCK ---
+
+//! Capabilities: the read/write/execute-style permissions a worker may exercise.
+
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+
+/// A discrete capability that can be granted to a worker operating within a
+/// domain. These are the atoms the supervisor checks before allowing an action.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Capability {
+    /// Inspect state (read files, query services, observe).
+    Read,
+    /// Mutate state (write files, change config, send commands that alter).
+    Write,
+    /// Run arbitrary executables / shells / subprocesses.
+    Execute,
+    /// Create sub-goals or spawn child workers.
+    Spawn,
+    /// Communicate with the supervisor (report progress, request escalation).
+    Signal,
+}
+
+/// An ordered set of capabilities. `BTreeSet` gives deterministic serialization
+/// and stable equality, which matters for constraint checks and audit logs.
+pub type CapabilitySet = BTreeSet<Capability>;
+
+impl Capability {
+    /// Every capability. Used for trusted/bootstrap domains.
+    pub fn all() -> CapabilitySet {
+        [
+            Capability::Read,
+            Capability::Write,
+            Capability::Execute,
+            Capability::Spawn,
+            Capability::Signal,
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    /// A safe default: observe and talk to the supervisor, but change nothing.
+    pub fn read_only() -> CapabilitySet {
+        [Capability::Read, Capability::Signal].into_iter().collect()
+    }
+
+    /// Read + write, but no arbitrary execution and no spawning.
+    pub fn read_write() -> CapabilitySet {
+        [Capability::Read, Capability::Write, Capability::Signal]
+            .into_iter()
+            .collect()
+    }
+}
+
+
+// --- DUPLICATE BLOCK ---
+
+[package]
+name = "job-star"
+version = "0.1.0"
+edition = "2021"
+description = "Supervised autonomous task execution system"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+thiserror = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+parking_lot = "0.12"
+dashmap = "5.5"
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+
+// --- DUPLICATE BLOCK ---
+
+[package]
+name = "job-star-supervisor"
+version = "0.1.0"
+edition = "2021"
+description = "Supervision core for Job-Star: constraint enforcement, progress monitoring, anomaly detection, escalation"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+thiserror = "1.0"
+tracing = "0.1"
+
+[dev-dependencies]
+pretty_assertions = "1.4"

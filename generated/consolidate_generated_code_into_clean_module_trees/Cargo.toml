@@ -1,0 +1,69 @@
+[package]
+name = "jobstar-supervisor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Native supervisor/orchestrator for Job-Star"
+readme = "../README.md"
+
+[lib]
+name = "jobstar_supervisor"
+path = "src/lib.rs"
+# `cdylib` enables building a Python extension via maturin later;
+# `rlib` keeps it usable as a normal Rust library within the workspace.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+# Optional PyO3 bindings for Python interop. Disabled by default to keep
+# `cargo build` lightweight; enable with `--features python`.
+[dependencies.pyo3]
+version = "0.22"
+features = ["extension-module", "abi3-py310"]
+optional = true
+
+[features]
+default = []
+python = ["dep:pyo3"]
+
+
+// --- DUPLICATE BLOCK ---
+
+[package]
+name = "jobstar-supervisor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "jobstar_supervisor"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+
+// --- DUPLICATE BLOCK ---
+
+//! Job-Star supervisor (Rust core): high-throughput orchestration.
+
+pub mod models;
+pub mod orchestrator;
+
+pub use models::{JobRun, RunStatus};
+pub use orchestrator::Supervisor;

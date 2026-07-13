@@ -1,0 +1,1 @@
+Covered by step 7: Build progress monitoring

@@ -1,0 +1,37 @@
+# Job-Star Triage Engine Configuration
+
+service:
+  name: triage
+  version: "0.1.0"
+  host: "0.0.0.0"
+  port: 8100
+
+# Goal registry backend
+# Set to "http" for production, "memory" for dev
+registry:
+  backend: "memory"
+  url: "${JOBSTAR_REGISTRY_URL:-http://localhost:8200}"
+  api_key: "${JOBSTAR_REGISTRY_API_KEY:-}"
+  timeout_seconds: 10
+
+# Classification thresholds
+classification:
+  # Confidence threshold below which a human review is recommended
+  min_confidence: 0.30
+  # Weight for submitter hints (0.0 = ignore, 1.0 = always trust)
+  hint_weight: 0.40
+
+# Duplicate detection thresholds
+duplicate_detection:
+  title_similarity_threshold: 0.45
+  tag_overlap_threshold: 0.50
+  combined_score_threshold: 0.55
+  # Score above which a match is considered a likely duplicate
+  duplicate_threshold: 0.70
+  # Only check against goals with these statuses
+  statuses_to_check: ["open"]
+
+# Logging
+logging:
+  level: "INFO"
+  format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"

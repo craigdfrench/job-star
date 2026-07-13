@@ -1,0 +1,122 @@
+.screenshot-capture {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.screenshot-capture__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.screenshot-capture__label {
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+.screenshot-capture__hint {
+  font-size: 0.75rem;
+  color: #6b7280;
+  transition: color 0.2s ease;
+}
+
+.screenshot-capture__hint.is-flash {
+  color: #059669;
+  font-weight: 600;
+}
+
+.screenshot-capture__dropzone {
+  border: 2px dashed #d1d5db;
+  border-radius: 0.5rem;
+  padding: 1rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.screenshot-capture__dropzone:hover,
+.screenshot-capture__dropzone.is-dragging {
+  border-color: #2563eb;
+  background-color: #eff6ff;
+}
+
+.screenshot-capture__dropzone-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.screenshot-capture__icon {
+  font-size: 1.5rem;
+}
+
+.screenshot-capture__dropzone-text {
+  font-size: 0.8125rem;
+  color: #4b5563;
+}
+
+.screenshot-capture__thumbs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 0.5rem;
+}
+
+.screenshot-capture__thumb {
+  position: relative;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.375rem;
+  padding: 0.25rem;
+  background: #fff;
+}
+
+.screenshot-capture__thumb-img {
+  width: 100%;
+  height: 80px;
+  object-fit: cover;
+  border-radius: 0.25rem;
+  display: block;
+}
+
+.screenshot-capture__thumb-meta {
+  display: flex;
+  flex-direction: column;
+  margin-top: 0.25rem;
+}
+
+.screenshot-capture__thumb-name {
+  font-size: 0.6875rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.screenshot-capture__thumb-source {
+  font-size: 0.625rem;
+  color: #9ca3af;
+  text-transform: uppercase;
+}
+
+.screenshot-capture__remove {
+  position: absolute;
+  top: 0.25rem;
+  right: 0.25rem;
+  width: 1.25rem;
+  height: 1.25rem;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 0.875rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.screenshot-capture__remove:hover {
+  background: rgba(0, 0, 0, 0.75);
+}

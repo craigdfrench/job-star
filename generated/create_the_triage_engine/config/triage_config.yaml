@@ -1,0 +1,245 @@
+# Triage Engine Configuration
+# Keyword/regex rules for classification. Edit freely — no code changes needed.
+
+domains:
+  meta:
+    keywords:
+      - job-star
+      - jobstar
+      - bootstrap
+      - self-improve
+      - triage
+      - "working on itself"
+      - goal registry
+    weight: 2.0
+  infra:
+    keywords:
+      - deploy
+      - deployment
+      - ci/cd
+      - pipeline
+      - server
+      - docker
+      - kubernetes
+      - k8s
+      - infrastructure
+      - provisioning
+      - dns
+      - ssl
+      - certificate
+    weight: 1.5
+  dev:
+    keywords:
+      - bug
+      - feature
+      - refactor
+      - function
+      - api
+      - endpoint
+      - test
+      - code
+      - implement
+      - fix
+      - crash
+      - error
+      - exception
+    weight: 1.0
+  research:
+    keywords:
+      - investigate
+      - research
+      - explore
+      - study
+      - learn
+      - compare
+      - evaluate
+      - spike
+      - prototype
+    weight: 1.0
+  personal:
+    keywords:
+      - errand
+      - appointment
+      - health
+      - finance
+      - family
+      - home
+      - personal
+      - grocery
+      - bill
+    weight: 1.0
+
+urgency:
+  now:
+    keywords:
+      - urgent
+      - asap
+      - immediately
+      - critical
+      - blocker
+      - blocking
+      - "down"
+      - outage
+      - broken
+      - emergency
+    weight: 3.0
+    regex:
+      - pattern: '\b(now|today|right away)\b'
+        weight: 2.0
+  soon:
+    keywords:
+      - soon
+      - this week
+      - priority
+      - important
+      - needed
+      - deadline
+    weight: 2.0
+    regex:
+      - pattern: '\bby (tomorrow|monday|tuesday|wednesday|thursday|friday)\b'
+        weight: 2.0
+      - pattern: '\bin \d+ days?\b'
+        weight: 1.5
+  later:
+    keywords:
+      - later
+      - backlog
+      - eventually
+      - next sprint
+      - next week
+      - scheduled
+    weight: 1.0
+  someday:
+    keywords:
+      - someday
+      - nice to have
+      - nice-to-have
+      - maybe
+      - wishlist
+      - "if time"
+      - low priority
+    weight: 1.0
+
+types:
+  bug:
+    keywords:
+      - bug
+      - crash
+      - error
+      - exception
+      - broken
+      - fails
+      - failing
+      - incorrect
+      - wrong
+      - regression
+    weight: 2.0
+    regex:
+      - pattern: '\b(stack ?trace|segfault|nil pointer|null reference)\b'
+        weight: 3.0
+  feature:
+    keywords:
+      - feature
+      - add support
+      - implement
+      - new
+      - support for
+      - enable
+      - allow
+    weight: 1.5
+  task:
+    keywords:
+      - task
+      - do
+      - complete
+      - finish
+      - update
+      - configure
+      - set up
+      - setup
+    weight: 1.0
+  question:
+    keywords:
+      - how do i
+      - how to
+      - what is
+      - why does
+      - question
+      - wondering
+      - curious
+      - "?"
+    weight: 1.5
+  refactor:
+    keywords:
+      - refactor
+      - cleanup
+      - clean up
+      - restructure
+      - simplify
+      - technical debt
+      - tech debt
+    weight: 2.0
+  ops:
+    keywords:
+      - deploy
+      - restart
+      - monitor
+      - alert
+      - log
+      - backup
+      - restore
+      - rotate
+      - provision
+    weight: 1.5
+
+# Duplicate detection
+duplicate:
+  similarity_threshold: 0.6   # above this => likely duplicate
+  high_confidence_threshold: 0.8
+  min_title_length: 5         # ignore very short titles for dedup
+  stopwords:
+    - the
+    - a
+    - an
+    - is
+    - are
+    - was
+    - were
+    - be
+    - to
+    - of
+    - in
+    - on
+    - for
+    - and
+    - or
+    - with
+    - that
+    - this
+    - it
+    - do
+    - does
+
+# Tag suggestion
+tagging:
+  max_tags: 5
+  min_keyword_length: 4
+  # Map keywords to canonical tags
+  tag_map:
+    docker: docker
+    kubernetes: k8s
+    k8s: k8s
+    api: api
+    database: database
+    db: database
+    test: testing
+    tests: testing
+    testing: testing
+    deploy: deployment
+    deployment: deployment
+    ci/cd: ci-cd
+    security: security
+    auth: auth
+    ui: ui
+    frontend: frontend
+    backend: backend

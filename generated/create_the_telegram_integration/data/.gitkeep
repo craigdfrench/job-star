@@ -1,0 +1,3 @@
+# Job-Star data directory — keep the folder, ignore contents
+data/*
+!data/.gitkeep

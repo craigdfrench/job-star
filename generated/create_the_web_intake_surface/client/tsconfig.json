@@ -1,0 +1,36 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist",
+    "composite": true,
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["vite/client"],
+    "noEmit": true
+  },
+  "include": ["src", "../shared/src"],
+  "references": [{ "path": "../shared" }]
+}
+
+
+// --- DUPLICATE BLOCK ---
+
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import path from "node:path";
+
+export default defineConfig({
+  plugins: [react()],
+  resolve: {
+    alias: {
+      "@job-star/shared": path.resolve(__dirname, "../shared/src/index.ts"),
+    },
+  },
+  server: {
+    port: 5173,
+    proxy: {
+      "/api": "http://localhost:4319",
+    },
+  },
+});

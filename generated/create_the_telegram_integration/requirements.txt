@@ -1,0 +1,17 @@
+# Telegram Bot API (async, v20+)
+python-telegram-bot==21.6
+
+# Env / config
+pydantic==2.9.2
+pydantic-settings==2.5.2
+python-dotenv==1.0.1
+
+# Voice transcription (used by transcribe.py)
+openai==1.51.0
+httpx==0.27.2
+
+# Optional local Whisper fallback
+# openai-whisper==v20231117
+
+# Utilities
+loguru==0.7.2

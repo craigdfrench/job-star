@@ -1,0 +1,104 @@
+# File: project_structure.yaml
+# Unified, deduplicated module tree for Job-Star
+
+project:
+  root: src/job_star
+  structure:
+    - path: __init__.py
+      desc: Package root, exports version
+    - path: shared/
+      children:
+        - path: __init__.py
+        - path: config.py
+          desc: Shared configuration loading (env, yaml)
+        - path: logging.py
+          desc: Structured logging setup
+        - path: types.py
+          desc: Shared type definitions and protocols
+    - path: context_gatherer/
+      source_tree: context_gatherer_v2
+      merged_from:
+        - tree: context_gatherer_v1
+          files: [file_context.walk_with_ignore]
+      children:
+        - path: __init__.py
+        - path: gatherer.py
+          desc: Main ContextGatherer orchestrator
+        - path: git_context.py
+          desc: Git state extraction (branch, diff, status)
+        - path: file_context.py
+          desc: Filesystem context with ignore patterns
+        - path: history_context.py
+          desc: Previous run history lookup
+        - path: models.py
+          desc: Context dataclasses (ContextBundle, GitState, etc.)
+    - path: triage_engine/
+      source_tree: triage_v3
+      merged_from:
+        - tree: triage_v2
+          files: [priority.calculate_urgency_decay]
+      children:
+        - path: __init__.py
+        - path: triage.py
+          desc: Main TriageEngine orchestrator
+        - path: classifier.py
+          desc: Pluggable classifier (Protocol-based)
+        - path: priority.py
+          desc: Priority scoring with urgency decay
+        - path: rules.py
+          desc: Triage rule definitions and evaluation
+        - path: models.py
+          desc: Triage dataclasses (TriageResult, Priority, etc.)
+    - path: router/
+      source_tree: router_v3
+      merged_from:
+        - tree: router_v2
+          files: [matchers.regex_match]
+      children:
+        - path: __init__.py
+        - path: router.py
+          desc: Main Router orchestrator with fallback
+        - path: destinations.py
+          desc: Typed destination registry
+        - path: matchers.py
+          desc: Route matching (glob, exact, regex)
+        - path: models.py
+          desc: Router dataclasses (Route, Destination, etc.)
+    - path: supervisor/
+      source_tree: supervisor_v4
+      merged_from:
+        - tree: supervisor_v3
+          files: [health_check.liveness_probe]
+        - tree: supervisor_v2
+          files: [failure_handler.dead_letter_queue]
+      children:
+        - path: __init__.py
+        - path: supervisor.py
+          desc: Main Supervisor orchestrator
+        - path: worker_manager.py
+          desc: Worker lifecycle (spawn, monitor, kill)
+        - path: failure_handler.py
+          desc: Failure recovery + dead letter queue
+        - path: retry_policy.py
+          desc: Retry policy with backoff
+        - path: health_check.py
+          desc: Health checks + liveness probes
+        - path: metrics.py
+          desc: Execution metrics + circuit breaker
+        - path: models.py
+          desc: Supervisor dataclasses (WorkerState, Metrics, etc.)
+    - path: gatehouse_integration/
+      source_tree: gatehouse_v2
+      merged_from:
+        - tree: gatehouse_v1
+          files: [auth.token_cache]
+      children:
+        - path: __init__.py
+        - path: client.py
+          desc: Gatehouse API client with retry
+        - path: auth.py
+          desc: Authentication + token caching
+        - path: validation.py
+          desc: Request/response validation
+        - path: models.py
+          desc: Gatehouse dataclasses (AuthToken, ValidationResult, etc.)
