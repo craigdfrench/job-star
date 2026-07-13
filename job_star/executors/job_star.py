@@ -97,7 +97,7 @@ class JobStarExecutor(PRExecutor):
         super().__init__(
             gateway_monitor=gateway_monitor,
             repo_path=JOB_STAR_PATH,
-            test_command="cd /home/craig/job-star/job-star && python3 -m pytest tests/test_integration.py -v --tb=short",
+            test_command="python3 -m pytest tests/test_integration.py -v --tb=short --cache-clear",
             base_branch="main",
         )
         self._curated_context: str | None = None
