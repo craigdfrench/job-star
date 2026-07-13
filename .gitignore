@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+venv/
+
+# Node
+node_modules/
+package-lock.json
+
+# IDE
+.vscode/
+.idea/
+
+# Test cache
+.pytest_cache/
+
+# Secrets (never commit)
+*.env
+secrets/
+
+# Logs
+*.log
+
+# OS
+.Ds_Store

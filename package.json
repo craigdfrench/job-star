@@ -1,0 +1,25 @@
+{
+  "name": "job-star",
+  "version": "0.0.1",
+  "description": "Constrained, supervised, goal-oriented AI orchestration",
+  "type": "module",
+  "bin": {
+    "job-star": "./src/cli.ts"
+  },
+  "scripts": {
+    "start": "tsx src/cli.ts",
+    "db:up": "docker run -d --name job-star-db -e POSTGRES_DB=job_star -e POSTGRES_USER=jobstar -e POSTGRES_PASSWORD=jobstar -p 5432:5432 postgres:16-alpine",
+    "db:down": "docker stop job-star-db && docker rm job-star-db",
+    "db:init": "docker exec -i job-star-db psql -U jobstar -d job_star < sql/schema.sql",
+    "db:reset": "docker stop job-star-db 2>/dev/null; docker rm job-star-db 2>/dev/null; npm run db:up && sleep 3 && npm run db:init"
+  },
+  "dependencies": {
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
