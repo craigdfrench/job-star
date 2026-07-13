@@ -199,6 +199,10 @@ class PRExecutor(DefaultExecutor):
             if code != 0:
                 return False, f"failed to create worktree: {err}"
 
+        # Validate the worktree was created with a .git pointer
+        if not _is_valid_worktree(worktree_path):
+            return False, f"worktree created at {worktree_path} but .git pointer is missing or invalid"
+
         self._active_worktree = worktree_path
         return True, f"created worktree {worktree_path}"
 
