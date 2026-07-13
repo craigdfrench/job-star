@@ -63,6 +63,7 @@ def register_defaults() -> None:
     from .default import DefaultExecutor
     from .gatehouse_ai import GatehouseAIExecutor
     from .research import ResearchExecutor
+    from .job_star import JobStarExecutor
 
     if "default" not in _registry:
         register_executor(DefaultExecutor())
@@ -70,3 +71,5 @@ def register_defaults() -> None:
         register_executor(GatehouseAIExecutor())
     if "research" not in _registry:
         register_executor(ResearchExecutor())
+    if "job-star" not in _registry:
+        register_executor(JobStarExecutor())

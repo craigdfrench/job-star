@@ -242,6 +242,7 @@ SERVICES = [
     "job-star-worker",
     "job-star-worker-gatehouse",
     "job-star-worker-research",
+    "job-star-worker-jobstar",
 ]
 
 

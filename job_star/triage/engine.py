@@ -49,6 +49,14 @@ DOMAIN_KEYWORDS: dict[Domain, list[str]] = {
 # Expert detection: keywords that indicate a goal should be owned by a
 # specialized expert agent. Maps expert name → detection keywords/paths.
 EXPERT_KEYWORDS: dict[str, list[str]] = {
+    "job-star": [
+        "job star", "job-star", "job_star", "check-in", "checkin",
+        "upgrade tool", "blue-green", "schema migration", "worker registry",
+        "orphan step", "reap", "triage engine", "follow-up engine",
+        "idle loop", "goal registry", "PRExecutor", "UPGRADE.md",
+        "schema_migrations", "worker_registry", "check_ins",
+        "graceful shutdown", "drain signal", "health endpoint",
+    ],
     "gatehouse-ai": [
         "gatehouse", "gatehouse-ai", "cog-proxy", "model_costs",
         "cost_class", "routing_advice", "quota_pool", "windsurf_daily",
