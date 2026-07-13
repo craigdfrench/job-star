@@ -162,6 +162,23 @@ async def update_goal_status(goal_id: str, status: GoalStatus) -> None:
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("UPDATE goals SET status = $2 WHERE id = $1", UUID(goal_id), status.value)
+        # Synchronize step statuses with the new goal status so the queue
+        # and dashboard don't show orphaned pending/in_progress steps.
+        if status == GoalStatus.COMPLETED:
+            await conn.execute(
+                "UPDATE goal_steps SET status = 'completed', completed_at = NOW() WHERE goal_id = $1 AND status IN ('pending', 'in_progress')",
+                UUID(goal_id),
+            )
+        elif status == GoalStatus.ABANDONED:
+            await conn.execute(
+                "UPDATE goal_steps SET status = 'abandoned' WHERE goal_id = $1 AND status IN ('pending', 'in_progress', 'failed')",
+                UUID(goal_id),
+            )
+        elif status == GoalStatus.PAUSED:
+            await conn.execute(
+                "UPDATE goal_steps SET status = 'pending' WHERE goal_id = $1 AND status = 'in_progress'",
+                UUID(goal_id),
+            )
     await audit("goal_updated", {"status": status.value}, goal_id)
 
 
