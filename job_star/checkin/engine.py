@@ -70,7 +70,17 @@ async def create_check_in(
         asyncio.create_task(send_check_in_notification(check_in.id))
     except Exception:
         pass  # notification failure should not block check-in creation
-    
+
+    # Push to Vikunja if the goal is linked to a task
+    try:
+        from ..vikunja import push_checkin_to_vikunja
+        from ..db import get_goal as _get_goal
+        goal = await _get_goal(goal_id)
+        if goal and goal.vikunja_task_id:
+            asyncio.create_task(push_checkin_to_vikunja(goal, type.value, progress_summary))
+    except Exception:
+        pass  # Vikunja failure should not block check-in creation
+
     return check_in
 
 

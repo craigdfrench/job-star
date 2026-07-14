@@ -43,6 +43,9 @@ CREATE TABLE goals (
         -- e.g. "craig@thefrenches.ca" or "sarah"
         -- e.g. 'gatehouse-ai' — only workers with matching affinity can claim
 
+    -- Vikunja task ID if this goal was synced from a Vikunja task
+    vikunja_task_id INTEGER,
+
     -- Flexible metadata
     metadata JSONB DEFAULT '{}',
 

@@ -107,6 +107,7 @@ class Goal:
     source: str = "intake"
     expert: Optional[str] = None  # expert agent that owns this goal (NULL = generic)
     requested_by: Optional[str] = None  # who requested this goal (for multi-user/family)
+    vikunja_task_id: Optional[int] = None  # Vikunja task ID if synced from Vikunja
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -128,6 +129,7 @@ class Goal:
             source=row.get("source", "intake"),
             expert=row.get("expert"),
             requested_by=row.get("requested_by"),
+            vikunja_task_id=row.get("vikunja_task_id"),
             metadata=_parse_jsonb(row.get("metadata", {})) or {},
             created_at=row.get("created_at"),
             updated_at=row.get("updated_at"),

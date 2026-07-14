@@ -96,12 +96,13 @@ async def create_goal(
     metadata: dict | None = None,
     expert: str | None = None,
     requested_by: str | None = None,
+    vikunja_task_id: int | None = None,
 ) -> Goal:
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """INSERT INTO goals (title, description, domain, urgency, source, metadata, parent_id, expert, requested_by)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            """INSERT INTO goals (title, description, domain, urgency, source, metadata, parent_id, expert, requested_by, vikunja_task_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                RETURNING *""",
             title,
             description,
@@ -112,8 +113,9 @@ async def create_goal(
             parent_id,
             expert,
             requested_by,
+            vikunja_task_id,
         )
-    await audit("goal_created", {"title": title, "domain": domain.value, "urgency": urgency.value, "expert": expert, "requested_by": requested_by}, row["id"])
+    await audit("goal_created", {"title": title, "domain": domain.value, "urgency": urgency.value, "expert": expert, "requested_by": requested_by, "vikunja_task_id": vikunja_task_id}, row["id"])
     return Goal.from_row(dict(row))
 
 
@@ -121,6 +123,14 @@ async def get_goal(goal_id: str) -> Goal | None:
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow("SELECT * FROM goals WHERE id = $1", UUID(goal_id))
+    return Goal.from_row(dict(row)) if row else None
+
+
+async def get_goal_by_vikunja_task(task_id: int) -> Goal | None:
+    """Find a goal by its linked Vikunja task ID."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM goals WHERE vikunja_task_id = $1", task_id)
     return Goal.from_row(dict(row)) if row else None
 
 

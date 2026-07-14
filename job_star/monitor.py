@@ -26,8 +26,11 @@ from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any
 
+import logging
 from .db import get_pool, close_pool, audit
 from .gatehouse import check_health
+
+log = logging.getLogger(__name__)
 
 
 # ============================================================================
@@ -412,6 +415,30 @@ async def run_monitor(auto_fix: bool = True) -> MonitorReport:
         )
 
     await close_pool()
+
+    # Vikunja sync — pull new tasks and reconcile status (every monitor run)
+    try:
+        from .vikunja import sync_from_vikunja, reconcile_vikunja_status
+        new_goals = await sync_from_vikunja()
+        if new_goals > 0:
+            report.findings.append(Finding(
+                severity="info",
+                category="vikunja_sync",
+                goal_id=None,
+                message=f"Synced {new_goals} new goal(s) from Vikunja",
+                fixed=False,
+            ))
+        reconciled = await reconcile_vikunja_status()
+        if reconciled > 0:
+            report.findings.append(Finding(
+                severity="info",
+                category="vikunja_reconcile",
+                goal_id=None,
+                message=f"Updated {reconciled} Vikunja task(s) to match goal status",
+                fixed=False,
+            ))
+    except Exception as e:
+        log.warning(f"Vikunja sync failed: {e}")
 
     # Audit log
     await audit("monitor_run", {
