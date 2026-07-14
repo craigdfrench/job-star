@@ -597,10 +597,17 @@ async def discuss_check_in(
 
     system_prompt = "\n".join(context_parts)
 
-    # Use gemini-3-5-flash-minimal (CHEAP tier, fast, good for chat)
-    result = await execute_ai(message, model="gemini-3-5-flash-minimal", system_prompt=system_prompt)
+    # Try gemini-2.5-flash first (cheap, fast, returns content). Fall back to
+    # glm-5.2 if the response is empty (some gemini variants return empty).
+    result = None
+    # Use swe-1-6 (cognition reasoning model) on the gatehouse-ai gateway.
+    # Fall back to glm-5.2 if it fails.
+    for m in ("swe-1-6", "glm-5.2"):
+        result = await execute_ai(message, model=m, system_prompt=system_prompt)
+        if result.success and result.content.strip():
+            break
 
-    if result.success:
+    if result and result.success and result.content.strip():
         from job_star.db import audit
         await audit("checkin_discuss", {
             "check_in_id": check_in_id,
