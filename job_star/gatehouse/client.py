@@ -26,6 +26,7 @@ async def execute(
     system_prompt: str | None = None,
     max_tokens: int = 4096,
     temperature: float = 0.7,
+    timeout: float = 300.0,
 ) -> ExecutionResult:
     """Execute an AI call through the gatehouse gateway.
 
@@ -35,6 +36,9 @@ async def execute(
         system_prompt: Optional system prompt.
         max_tokens: Maximum output tokens.
         temperature: Sampling temperature.
+        timeout: HTTP timeout in seconds. Default 300 (5 min) because reasoning
+            models generating large code outputs (16k tokens) can take well
+            over the previous 120s default, causing ReadTimeout failures.
 
     Returns:
         ExecutionResult with the AI's response.
@@ -49,7 +53,7 @@ async def execute(
     messages.append({"role": "user", "content": prompt})
 
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 f"{base_url}/chat/completions",
                 headers={
@@ -88,7 +92,7 @@ async def execute(
     except Exception as e:
         return ExecutionResult(
             success=False,
-            error=str(e),
+            error=f"{type(e).__name__}: {e}" if str(e) else type(e).__name__,
             model=model,
         )
 
