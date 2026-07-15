@@ -283,7 +283,9 @@ async def claim_next_step(goal_id: str) -> Step | None:
         async with conn.transaction():
             row = await conn.fetchrow(
                 """UPDATE goal_steps
-                   SET status = 'in_progress', attempted_at = NOW()
+                   SET status = 'in_progress', attempted_at = NOW(),
+                       attempt_count = attempt_count + 1,
+                       last_attempt_at = NOW()
                    WHERE id = (
                      SELECT id FROM goal_steps
                      WHERE goal_id = $1 AND status = 'pending'
@@ -371,7 +373,9 @@ async def claim_next_step_any_goal(
     # A step is claimable only if all its depends_on steps are completed
     # (or it has no dependencies).
     sql = f"""UPDATE goal_steps
-              SET status = 'in_progress', attempted_at = NOW()
+              SET status = 'in_progress', attempted_at = NOW(),
+                  attempt_count = attempt_count + 1,
+                  last_attempt_at = NOW()
               WHERE id = (
                 SELECT s.id FROM goal_steps s
                 JOIN goals g ON s.goal_id = g.id
@@ -424,7 +428,8 @@ async def update_step_status(step_id: str, status: StepStatus, result: dict | No
             await conn.execute(
                 """UPDATE goal_steps
                    SET status = $2, result = $3, model = $4, input_tokens = $5,
-                       output_tokens = $6, cost = $7, completed_at = NOW()
+                       output_tokens = $6, cost = $7, completed_at = NOW(),
+                       consecutive_failures = 0
                    WHERE id = $1""",
                 UUID(step_id), status.value,
                 json.dumps(result) if result else None,
@@ -432,8 +437,21 @@ async def update_step_status(step_id: str, status: StepStatus, result: dict | No
             )
         elif status == StepStatus.IN_PROGRESS:
             await conn.execute(
-                "UPDATE goal_steps SET status = $2, attempted_at = NOW() WHERE id = $1",
+                """UPDATE goal_steps
+                   SET status = $2, attempted_at = NOW(),
+                       attempt_count = attempt_count + 1,
+                       last_attempt_at = NOW()
+                   WHERE id = $1""",
                 UUID(step_id), status.value,
+            )
+        elif status == StepStatus.FAILED:
+            await conn.execute(
+                """UPDATE goal_steps
+                   SET status = $2, result = $3,
+                       consecutive_failures = consecutive_failures + 1
+                   WHERE id = $1""",
+                UUID(step_id), status.value,
+                json.dumps(result) if result else None,
             )
         else:
             await conn.execute(

@@ -366,8 +366,31 @@ async def apply_migrations() -> list[str]:
     return applied
 
 
+def _strip_leading_comments(stmt: str) -> str:
+    """Remove leading blank lines and full-line -- comments from a statement.
+
+    The splitter groups comment lines with the following ;-terminated
+    statement. Without stripping, a statement like "-- comment\nCREATE TABLE ..."
+    starts with "--" and is silently skipped by callers that check
+    `stmt.startswith("--")` or `upper.startswith("CREATE TABLE")`. Inline
+    comments (after SQL on the same line) and mid-statement comments are
+    preserved — only leading comment/blank lines are removed.
+    """
+    lines = stmt.split("\n")
+    i = 0
+    while i < len(lines) and (not lines[i].strip() or lines[i].strip().startswith("--")):
+        i += 1
+    return "\n".join(lines[i:])
+
+
 def _split_sql_statements(sql: str) -> list[str]:
-    """Split SQL into statements, respecting $$ blocks."""
+    """Split SQL into statements, respecting $$ blocks.
+
+    Each returned statement has leading blank lines and full-line -- comments
+    stripped so it begins with actual SQL. This ensures callers' startswith()
+    checks (e.g. "CREATE TABLE IF NOT EXISTS") work even when the statement is
+    preceded by a comment block in the .sql file.
+    """
     statements = []
     current = []
     in_dollar_quote = False
@@ -385,12 +408,12 @@ def _split_sql_statements(sql: str) -> list[str]:
             continue
         if stripped.endswith(";"):
             current.append(line)
-            statements.append("\n".join(current))
+            statements.append(_strip_leading_comments("\n".join(current)))
             current = []
         else:
             current.append(line)
     if current:
-        statements.append("\n".join(current))
+        statements.append(_strip_leading_comments("\n".join(current)))
     return statements
 
 

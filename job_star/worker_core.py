@@ -44,6 +44,19 @@ class Worker:
         self.generation = int(os.environ.get("JOB_STAR_GENERATION", "1"))
         self._draining = False
         self._registered = False
+        # Backoff state for blocked steps. When the supervisor blocks a step
+        # (budget/retries exhausted), we must not immediately re-claim — that
+        # caused the 2026-07-14 hot loop. We sleep with exponential backoff,
+        # capped at BACKOFF_MAX_SEC. Reset to the floor whenever we successfully
+        # do real work or find no work (idle), so a transient block doesn't
+        # permanently slow the worker.
+        self._backoff_sec: float = 0.0
+
+    # Backoff configuration. The floor matches the worker's idle interval so a
+        # first block isn't punitive; the cap prevents unresponsiveness.
+    BACKOFF_FLOOR_SEC: float = 15.0
+    BACKOFF_MAX_SEC: float = 300.0   # 5 min cap
+    BACKOFF_GROWTH: float = 2.0     # double each consecutive block
 
     async def _register(self) -> None:
         """Register this worker in the worker_registry table."""
@@ -105,15 +118,21 @@ class Worker:
                 self.worker_id,
             )
 
-    async def _process_job_queue(self) -> bool:
-        """Claim and process a job_queue item (e.g., plan a new goal)."""
+    async def _process_job_queue(self) -> str | None:
+        """Claim and process a job_queue item (e.g., plan a new goal).
+
+        Returns:
+            None  — no job_queue item available.
+            "worked" — a job was processed (success or execution failure).
+            "blocked" — the supervisor blocked execution before an AI call.
+        """
         job = await claim_job_queue_item(
             self.worker_id,
             expert=self.expert,
             expert_any=self.expert_any,
         )
         if not job:
-            return False
+            return None
 
         goal_id = str(job["goal_id"])
         kind = job["kind"]
@@ -139,15 +158,15 @@ class Worker:
             else:
                 print(f"  [{self.worker_id}] failed: goal {goal_id[:8]}: {result.error[:60] if result.error else 'unknown'}", flush=True)
                 await complete_job(str(job["id"]), "failed")
-                return True
+                return "blocked" if result.blocked else "worked"
 
             await complete_job(str(job["id"]), "completed")
-            return True
+            return "worked"
         except Exception as exc:
             print(f"  [{self.worker_id}] job {job['id']} error: {exc}", flush=True)
             await complete_job(str(job["id"]), "failed")
             await publish_event("job.failed", {"job_id": str(job["id"]), "goal_id": goal_id, "error": str(exc)})
-            return True
+            return "worked"
 
     async def _plan_unstarted_goals(self) -> bool:
         """Find active goals with no steps and plan them.
@@ -187,18 +206,27 @@ class Worker:
                 print(f"  [{self.worker_id}] planning failed: {exc}", flush=True)
         return False
 
-    async def run_once(self) -> bool:
-        """Claim and execute one work unit (job_queue or pending step)."""
+    async def run_once(self) -> str:
+        """Claim and execute one work unit (job_queue or pending step).
+
+        Returns a status string consumed by run():
+            "worked"  — did real work (claimed/executed something).
+            "idle"    — no work available.
+            "blocked" — the supervisor blocked execution before an AI call
+                        (budget/retries exhausted). The caller should back off
+                        rather than immediately re-claiming, to avoid a hot loop.
+        """
         # Check for drain signal (blue-green)
         if await self._check_drain_signal():
             self._draining = True
             print(f"  [{self.worker_id}] drain signal received via DB — no new claims", flush=True)
-            return False
+            return "idle"
 
         # Prefer job_queue items first (plan/execute requests from API)
-        if await self._process_job_queue():
+        job_status = await self._process_job_queue()
+        if job_status is not None:
             await self._heartbeat()
-            return True
+            return job_status
 
         # Otherwise claim a pending step from any goal
         claimed = await claim_next_step_any_goal(
@@ -213,8 +241,8 @@ class Worker:
             # that need planning. This keeps workers busy when new goals are
             # added but not explicitly started.
             if await self._plan_unstarted_goals():
-                return True
-            return False
+                return "worked"
+            return "idle"
 
         goal, step = claimed
         expert_tag = f" [{goal.expert}]" if goal.expert else ""
@@ -224,9 +252,11 @@ class Worker:
         result = await self.orch.work_on_goal(goal.id, model_override=self.model)
         if result.success:
             print(f"  [{self.worker_id}] done: {step.title[:40]} [{result.model}]", flush=True)
+        elif result.blocked:
+            print(f"  [{self.worker_id}] blocked: {result.error[:60] if result.error else 'unknown'}", flush=True)
         else:
             print(f"  [{self.worker_id}] failed: {result.error[:60] if result.error else 'unknown'}", flush=True)
-        return True
+        return "blocked" if result.blocked else "worked"
 
     async def run(self) -> None:
         """Run the worker loop until max_cycles or interrupted.
@@ -281,15 +311,38 @@ class Worker:
                     break
                 cycle += 1
 
-                did_work = await self.run_once()
+                status = await self.run_once()
                 # Heartbeat every loop iteration so the monitor knows we're alive
                 await self._heartbeat()
-                if not did_work:
+
+                if status == "blocked":
+                    # Supervisor blocked execution (budget/retries exhausted).
+                    # Back off exponentially so we don't hot-loop on the same
+                    # un-executable step. A blocked step is now marked FAILED +
+                    # goal PAUSED (orchestrator), so the next claim will pull a
+                    # different step — but if everything is blocked (e.g. all
+                    # models 429), we still must not spin.
+                    if self._backoff_sec < self.BACKOFF_FLOOR_SEC:
+                        self._backoff_sec = self.BACKOFF_FLOOR_SEC
+                    else:
+                        self._backoff_sec = min(
+                            self._backoff_sec * self.BACKOFF_GROWTH,
+                            self.BACKOFF_MAX_SEC,
+                        )
+                    print(f"  [{self.worker_id}] blocked — backing off {self._backoff_sec:.0f}s...", flush=True)
+                    await asyncio.sleep(self._backoff_sec)
+                elif status == "idle":
                     if getattr(self, '_draining', False):
                         print(f"  [{self.worker_id}] drain complete — exiting gracefully.", flush=True)
                         break
+                    # Reset backoff on idle — a transient block shouldn't
+                    # permanently slow the worker once work becomes available.
+                    self._backoff_sec = 0.0
                     print(f"  [{self.worker_id}] no work available, sleeping {self.interval}s...", flush=True)
                     await asyncio.sleep(self.interval)
+                else:
+                    # "worked" — did real work. Reset backoff.
+                    self._backoff_sec = 0.0
         except asyncio.CancelledError:
             print(f"  [{self.worker_id}] cancelled.", flush=True)
             raise

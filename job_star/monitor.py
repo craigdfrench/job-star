@@ -43,6 +43,14 @@ class Thresholds:
     MAX_STEPS_PER_HOUR = 20         # >20 steps completed in 1 hour = loop
     MAX_DUPLICATE_STEP_TITLES = 5   # same title >5 times = duplicate work
 
+    # Claim-storm detection (rate-based). The step-count checks above miss
+    # the case where a single step is claimed repeatedly without completing
+    # (the 2026-07-14 incident: 1.35M claims, step count stayed at 7).
+    # These look at claim RATE and blocked-claim RATIO instead of step count.
+    MAX_CLAIMS_PER_STEP_PER_HOUR = 100   # >100 claims on one step in 1h = storm
+    MAX_BLOCKED_CLAIM_RATIO = 0.9        # >90% of claims blocked = spinning
+    STORM_MIN_CLAIMS = 20                # need this many claims before ratio is meaningful
+
     # Orphan reaping
     ORPHAN_STEP_AGE_MINUTES = 10    # in_progress >10 min = orphaned
 
@@ -136,6 +144,59 @@ async def check_runaway_loops(conn) -> list[Finding]:
             message=f"Goal completed {row['recent_count']} steps in the last hour (threshold {Thresholds.MAX_STEPS_PER_HOUR}) — runaway loop: {row['title']}",
         ))
 
+    return findings
+
+
+async def check_claim_storms(conn) -> list[Finding]:
+    """Detect steps being claimed at high rate without completing (claim storms).
+
+    This is the rate-based check that the step-count checks miss: a single
+    step claimed 1.35M times (the 2026-07-14 incident) never increased the
+    goal_steps row count, so MAX_STEPS_PER_GOAL never fired. Here we look at
+    the claim RATE per step and the blocked-claim RATIO over the last hour.
+
+    A step is a storm if EITHER:
+      - claims in the last hour > MAX_CLAIMS_PER_STEP_PER_HOUR, OR
+      - >= STORM_MIN_CLAIMS claims AND > MAX_BLOCKED_CLAIM_RATIO are blocked.
+    """
+    findings = []
+    rows = await conn.fetch("""
+        SELECT step_id,
+               count(*) FILTER (WHERE event IN ('step_claimed','step_blocked','step_failed')) AS claims,
+               count(*) FILTER (WHERE event = 'step_blocked') AS blocked
+        FROM audit_trail
+        WHERE event IN ('step_claimed','step_blocked','step_failed')
+          AND timestamp > NOW() - INTERVAL '1 hour'
+          AND step_id IS NOT NULL
+        GROUP BY step_id
+    """)
+    for row in rows:
+        claims = int(row["claims"] or 0)
+        blocked = int(row["blocked"] or 0)
+        if claims == 0:
+            continue
+        ratio = blocked / claims if claims else 0.0
+        is_storm = (
+            claims > Thresholds.MAX_CLAIMS_PER_STEP_PER_HOUR
+            or (claims >= Thresholds.STORM_MIN_CLAIMS
+                and ratio > Thresholds.MAX_BLOCKED_CLAIM_RATIO)
+        )
+        if is_storm:
+            # Resolve goal id + title for the message and fix action
+            row2 = await conn.fetchrow(
+                """SELECT g.id, g.title FROM goal_steps s
+                   JOIN goals g ON s.goal_id = g.id WHERE s.id = $1""",
+                row["step_id"],
+            )
+            goal_id = str(row2["id"]) if row2 else None
+            title = row2["title"] if row2 else str(row["step_id"])[:8]
+            findings.append(Finding(
+                severity="critical",
+                category="claim_storm",
+                goal_id=goal_id,
+                message=(f"Claim storm: step {str(row['step_id'])[:8]} claimed {claims}x in 1h "
+                         f"({blocked} blocked, {ratio:.0%} ratio) — spinning: {title}"),
+            ))
     return findings
 
 
@@ -343,6 +404,7 @@ async def run_monitor(auto_fix: bool = True) -> MonitorReport:
     async with pool.acquire() as conn:
         # ── Run all checks ────────────────────────────────────────────
         report.findings.extend(await check_runaway_loops(conn))
+        report.findings.extend(await check_claim_storms(conn))
         report.findings.extend(await check_orphaned_steps(conn))
         report.findings.extend(await check_stale_goals(conn))
         report.findings.extend(await check_checkin_backlog(conn))
@@ -359,32 +421,37 @@ async def run_monitor(auto_fix: bool = True) -> MonitorReport:
                 message="Gateway is down — execution will fail",
             ))
 
-        # ── Auto-reset failed steps after cooldown ──────────────────
-        if auto_fix:
-            reset_result = await conn.execute("""
-                UPDATE goal_steps SET status = 'pending', result = NULL,
-                       model = NULL, attempted_at = NULL, completed_at = NULL
-                WHERE status = 'failed'
-                  AND attempted_at < NOW() - INTERVAL '1 hour'
-                  AND goal_id IN (SELECT id FROM goals WHERE status = 'active')
-            """)
-            reset_count = int(reset_result.split()[-1]) if reset_result else 0
-            if reset_count > 0:
-                report.findings.append(Finding(
-                    severity="info",
-                    category="auto_reset_failed",
-                    goal_id=None,
-                    message=f"Reset {reset_count} failed step(s) to pending after 1-hour cooldown",
-                    fixed=True,
-                    action=f"reset {reset_count} step(s) to pending",
-                ))
-                report.fixed += 1
+        # ── Failed-step escalation (NOT auto-reset) ─────────────────
+        # Previously the monitor auto-reset failed steps to pending after a
+        # 1-hour cooldown. This defeated the retry limit: a step that fails
+        # for a real reason (impossible task, broken provider) never stayed
+        # dead, and the resurrection fed the 2026-07-14 hot loop. Now we only
+        # REPORT long-failed steps as a warning so the user can decide to
+        # retry explicitly. The step stays 'failed' (not re-claimable).
+        failed_rows = await conn.fetch("""
+            SELECT s.id, s.goal_id, g.title, s.attempted_at, s.consecutive_failures
+            FROM goal_steps s
+            JOIN goals g ON s.goal_id = g.id
+            WHERE s.status = 'failed'
+              AND s.attempted_at < NOW() - INTERVAL '1 hour'
+              AND g.status = 'active'
+        """)
+        for row in failed_rows:
+            report.findings.append(Finding(
+                severity="warning",
+                category="failed_step_escalation",
+                goal_id=str(row["goal_id"]),
+                message=(f"Step {str(row['id'])[:8]} has been failed for >1h "
+                         f"({row['consecutive_failures']} consecutive failures): {row['title']} "
+                         f"— retry explicitly or diagnose"),
+            ))
 
         # ── Apply safe fixes ──────────────────────────────────────────
         if auto_fix:
-            # Pause runaway loops
+            # Pause runaway loops and claim storms (both pause the goal so
+            # the worker stops claiming its steps)
             for f in report.findings:
-                if f.category == "runaway_loop" and f.goal_id:
+                if f.category in ("runaway_loop", "claim_storm") and f.goal_id:
                     if await fix_runaway_loop(conn, f.goal_id):
                         f.fixed = True
                         f.action = "paused goal + reaped in_progress steps"

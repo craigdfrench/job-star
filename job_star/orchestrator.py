@@ -230,14 +230,28 @@ Break this goal into concrete steps."""
                 "reason": pre_check.reason,
                 "violations": pre_check.violations,
             }, goal_id, step.id)
-            # Reset the step to pending so it can be retried later
-            # (e.g., after budget is raised). Leaving it in_progress
-            # would orphan it — no worker can claim an in_progress step.
-            await update_step_status(step.id, StepStatus.PENDING)
+            # PAUSE_GOAL means a hard limit was hit (budget exhausted or max
+            # retries exceeded). Mark the step FAILED so the queue (which only
+            # claims 'pending' steps) will not re-claim it, and pause the goal
+            # so the worker moves on to other work. Resetting to PENDING here
+            # caused a hot retry loop: the worker re-claimed the same step
+            # every cycle with no sleep, burning CPU indefinitely.
+            if pre_check.decision == SupervisionDecision.PAUSE_GOAL:
+                await update_step_status(
+                    step.id, StepStatus.FAILED,
+                    result={"error": pre_check.reason},
+                )
+                await update_goal_status(goal_id, GoalStatus.PAUSED)
+                print(f"  Step paused (goal paused): {pre_check.reason[:80]}", flush=True)
+            else:
+                # DENY: a soft, potentially transient block. Reset to pending
+                # so it can be retried later (e.g., after blockers clear).
+                await update_step_status(step.id, StepStatus.PENDING)
             return ExecutionResult(
                 success=False,
                 error=f"Supervisor blocked execution: {pre_check.reason}",
                 model="none",
+                blocked=True,
             )
 
         # Determine if the model override is allowed. If an override is

@@ -98,8 +98,16 @@ class BudgetTracker:
             # DB unavailable — fall back to in-memory check
             return self.check_budget(goal_id)
 
-    def check_retries(self, step_id: str) -> tuple[bool, str]:
-        failures = self._step_failures.get(step_id, 0)
+    def check_retries(self, step_id: str, consecutive_failures: int = 0) -> tuple[bool, str]:
+        """Check if a step has exceeded the retry limit.
+
+        Uses the DB-backed `consecutive_failures` count (migration 003) so retry
+        state persists across worker restarts and is visible to the monitor.
+        The in-memory `_step_failures` dict is kept only as a legacy fallback
+        for steps that predate the column or when the count is unavailable.
+        """
+        # Prefer the DB-backed count; fall back to in-memory for legacy paths.
+        failures = consecutive_failures if consecutive_failures > 0 else self._step_failures.get(step_id, 0)
         if failures >= self.max_step_retries:
             return False, f"Max retries exceeded for step: {failures}/{self.max_step_retries}"
         return True, ""
@@ -196,8 +204,8 @@ class Supervisor:
         if not ok:
             violations.append(reason)
 
-        # Check retries
-        ok, reason = self.budget.check_retries(step.id)
+        # Check retries (DB-backed via step.consecutive_failures)
+        ok, reason = self.budget.check_retries(step.id, step.consecutive_failures)
         if not ok:
             violations.append(reason)
 
@@ -206,7 +214,10 @@ class Supervisor:
             violations.append(f"Goal is blocked: {', '.join(goal.blockers)}")
 
         if violations:
-            if any("budget" in v.lower() or "retry" in v.lower() for v in violations):
+            # PAUSE_GOAL for hard limits (budget exhausted, retries exhausted).
+            # Use "retr" to match both "retry" and "retries" (the
+            # check_retries message is "Max retries exceeded...").
+            if any("budget" in v.lower() or "retr" in v.lower() for v in violations):
                 return SupervisionResult(
                     decision=SupervisionDecision.PAUSE_GOAL,
                     reason="; ".join(violations),

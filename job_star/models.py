@@ -155,6 +155,11 @@ class Step:
     completed_at: Optional[datetime] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    # Attempt tracking (migration 003): DB-backed circuit breaker.
+    # Replaces the in-memory BudgetTracker._step_failures dict.
+    attempt_count: int = 0
+    consecutive_failures: int = 0
+    last_attempt_at: Optional[datetime] = None
 
     @classmethod
     def from_row(cls, row: dict) -> "Step":
@@ -175,6 +180,9 @@ class Step:
             completed_at=row.get("completed_at"),
             created_at=row.get("created_at"),
             updated_at=row.get("updated_at"),
+            attempt_count=int(row.get("attempt_count") or 0),
+            consecutive_failures=int(row.get("consecutive_failures") or 0),
+            last_attempt_at=row.get("last_attempt_at"),
         )
 
 
@@ -245,6 +253,11 @@ class ExecutionResult:
     cost: float = 0.0
     success: bool = True
     error: Optional[str] = None
+    # True when the supervisor blocked execution BEFORE any AI call (budget
+    # exhausted, max retries hit, goal blocked). Distinct from success=False
+    # (which means an AI call was attempted and failed). The worker uses this
+    # to apply backoff rather than immediately re-claiming.
+    blocked: bool = False
     # Gatehouse-provided metadata from usage.x_gatehouse (dev server).
     # Contains cost_class, routing_advice, quota_windows, retail_value, etc.
     x_gatehouse: dict[str, Any] = field(default_factory=dict)

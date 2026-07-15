@@ -87,7 +87,14 @@ CREATE TABLE goal_steps (
     attempted_at TIMESTAMP,
     completed_at TIMESTAMP,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+
+    -- Attempt tracking (migration 003): DB-backed circuit breaker.
+    -- Replaces the in-memory BudgetTracker._step_failures dict so retry
+    -- state persists across worker restarts and is visible to the monitor.
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    last_attempt_at TIMESTAMP
 );
 
 -- ============================================================================
@@ -299,6 +306,9 @@ ON CONFLICT (name) DO NOTHING;
 CREATE INDEX idx_steps_goal ON goal_steps(goal_id);
 CREATE INDEX idx_steps_status ON goal_steps(status);
 CREATE INDEX idx_steps_order ON goal_steps(goal_id, order_index);
+CREATE INDEX idx_steps_attempt_count ON goal_steps(attempt_count DESC);
+CREATE INDEX idx_steps_last_attempt ON goal_steps(last_attempt_at DESC);
+CREATE INDEX idx_steps_consecutive_failures ON goal_steps(consecutive_failures DESC);
 
 CREATE INDEX idx_audit_goal ON audit_trail(goal_id);
 CREATE INDEX idx_audit_timestamp ON audit_trail(timestamp DESC);
