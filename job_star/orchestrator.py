@@ -363,6 +363,9 @@ Break this goal into concrete steps."""
         step_result = {"content": result.content}
         if warnings:
             step_result["warnings"] = warnings
+        # Persist proof-of-work artifacts for the completion-gate verifier
+        if result.artifacts:
+            step_result["artifacts"] = [a.to_dict() for a in result.artifacts]
 
         await update_step_status(
             step.id, StepStatus.COMPLETED,

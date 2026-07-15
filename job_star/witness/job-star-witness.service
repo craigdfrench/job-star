@@ -1,0 +1,29 @@
+[Unit]
+Description=Job-Star Witness Service (independent evidence capture)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=craig
+WorkingDirectory=/home/craig/job-star/job-star
+Environment=DATABASE_URL=postgresql://jobstar:jobstar@localhost:5432/job_star
+Environment=JOB_STAR_WITNESS_SOCKET=/run/job-star-witness.sock
+Environment=JOB_STAR_WITNESS_ID=job-star-witness-01
+ExecStart=/home/craig/job-star/job-star/.venv/bin/python -m job_star.witness.service
+Restart=on-failure
+RestartSec=5
+
+# Resource limits — the witness is lightweight (runs commands on behalf of
+# executors) but cap it to prevent runaway subprocesses from consuming the box.
+CPUQuota=30%
+MemoryMax=256M
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/run /tmp /home/craig/job-star/job-star
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

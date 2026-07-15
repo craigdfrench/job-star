@@ -310,6 +310,48 @@ CREATE INDEX idx_steps_attempt_count ON goal_steps(attempt_count DESC);
 CREATE INDEX idx_steps_last_attempt ON goal_steps(last_attempt_at DESC);
 CREATE INDEX idx_steps_consecutive_failures ON goal_steps(consecutive_failures DESC);
 
+-- ============================================================================
+-- WITNESS EVIDENCE: Append-only, hash-chained evidence store.
+-- The witness service captures ephemeral command executions (migrations,
+-- backfills, deployments) as tamper-evident records. See migration 004.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS witness_evidence (
+    guid         TEXT PRIMARY KEY,
+    timestamp    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    action       TEXT NOT NULL DEFAULT 'run_command',
+    command      JSONB NOT NULL DEFAULT '[]',
+    cwd          TEXT NOT NULL DEFAULT '',
+    exit_code    INTEGER NOT NULL DEFAULT -1,
+    stdout       TEXT NOT NULL DEFAULT '',
+    stderr       TEXT NOT NULL DEFAULT '',
+    output_hash  TEXT NOT NULL DEFAULT '',
+    duration_ms  INTEGER NOT NULL DEFAULT 0,
+    witness_id   TEXT NOT NULL DEFAULT 'job-star-witness-01',
+    prev_hash    TEXT NOT NULL DEFAULT '',
+    record_hash  TEXT NOT NULL DEFAULT ''
+);
+
+CREATE OR REPLACE FUNCTION prevent_witness_modify()
+RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'witness_evidence is append-only: % not allowed', TG_OP;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger WHERE tgname = 'witness_evidence_append_only'
+    ) THEN
+        CREATE TRIGGER witness_evidence_append_only
+        BEFORE UPDATE OR DELETE ON witness_evidence
+        FOR EACH ROW EXECUTE FUNCTION prevent_witness_modify();
+    END IF;
+END
+$$;
+
+CREATE INDEX IF NOT EXISTS idx_witness_ts ON witness_evidence (timestamp DESC);
+
 CREATE INDEX idx_audit_goal ON audit_trail(goal_id);
 CREATE INDEX idx_audit_timestamp ON audit_trail(timestamp DESC);
 

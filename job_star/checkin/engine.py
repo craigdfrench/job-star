@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import uuid4
 
-from ..models import Goal, GoalStatus, Step, StepStatus, Urgency, ExecutionResult
+from ..models import Goal, GoalStatus, Step, StepStatus, Urgency, ExecutionResult, Artifact
 from ..db import (
     audit, get_pool, get_goal, get_steps, publish_event,
     update_goal_status, update_goal_progress, record_decision,
@@ -493,6 +493,63 @@ def _fallback_check_in_content(
 
 
 # ============================================================================
+# Proof-of-work: collect and verify artifacts from step results
+# ============================================================================
+
+def _collect_artifacts(steps: list[Step]) -> list[Artifact]:
+    """Collect all declared artifacts from completed step results.
+
+    Artifacts are stored in the step result dict under the 'artifacts' key
+    (a list of artifact dicts). Returns a flat list of Artifact objects.
+    """
+    all_artifacts: list[Artifact] = []
+    for s in steps:
+        if s.status != StepStatus.COMPLETED:
+            continue
+        if not s.result or not isinstance(s.result, dict):
+            continue
+        raw = s.result.get("artifacts", [])
+        if not raw or not isinstance(raw, list):
+            continue
+        for d in raw:
+            if isinstance(d, dict):
+                all_artifacts.append(Artifact.from_dict(d))
+    return all_artifacts
+
+
+def _format_artifacts_for_results(verification) -> str:
+    """Format the verification result for the check-in 'results' field."""
+    lines = ["Proof of work (independently verified):", ""]
+    for a in verification.artifacts:
+        icon = "✅" if a.verified else ("❌" if a.verification_note.startswith("false") else "⚠️")
+        lines.append(f"  {icon} {a.kind}: {a.value[:80]}")
+        lines.append(f"      {a.verification_note}")
+    lines.append("")
+    lines.append(f"Summary: {verification.verified_count} verified, {verification.failed_count} failed, {verification.unverified_count} unverified")
+    return "\n".join(lines)
+
+
+def _format_missing_proof(goal: Goal, verification) -> str:
+    """Format the escalation message for a goal with no verified proof."""
+    if verification.total == 0:
+        return (
+            "No verifiable artifacts were produced. The steps completed but "
+            "produced no PRs, no commits, no files, and no passing tests — "
+            "only text output. The verifier found nothing to independently confirm."
+        )
+    lines = [
+        "The verifier could not independently confirm the claimed work:",
+        "",
+    ]
+    for a in verification.artifacts:
+        icon = "❌" if a.verification_note.startswith("false") else "⚠️"
+        lines.append(f"  {icon} {a.kind}: {a.value[:80]} — {a.verification_note}")
+    lines.append("")
+    lines.append("No verified proof of work. Accept only if text output was the intended deliverable.")
+    return "\n".join(lines)
+
+
+# ============================================================================
 # Check-in engine — orchestrates generation, triggers, and response processing
 # ============================================================================
 
@@ -589,17 +646,66 @@ class CheckInEngine:
     async def create_completion_check_in(
         self, goal: Goal, steps: list[Step],
     ) -> CheckIn:
-        """Generate and create a completion check-in for goal acceptance."""
+        """Generate and create a completion check-in for goal acceptance.
+
+        Runs the proof-of-work verifier before creating the check-in:
+          - Collects all artifacts declared by completed steps.
+          - Independently verifies each claim (gh/git/test re-run/witness).
+          - If verified artifacts exist: includes them in the results field
+            and asks for accept/reject/repair.
+          - If no verified artifacts: escalates with a "no proof of work"
+            message and the same three options, forcing conscious approval.
+        """
+        from ..proof import verify_artifacts, WitnessClient
+
+        # Collect and verify artifacts
+        declared = _collect_artifacts(steps)
+        witness_client = None
+        try:
+            witness_client = WitnessClient()
+            if not await witness_client.health():
+                witness_client = None
+        except Exception:
+            witness_client = None
+
+        verification = await verify_artifacts(declared, witness_client=witness_client)
+
+        # Generate the AI content (summary, next_steps) as usual
         content = await generate_check_in_content(
             goal, steps, CheckInType.COMPLETION, self.gateway_monitor,
         )
+
+        # Shape the check-in based on verification results
+        if verification.has_verified:
+            # Verified proof exists — show it, ask for accept/reject/repair
+            results_text = _format_artifacts_for_results(verification)
+            question_text = (
+                "The verifier independently confirmed the artifacts above. "
+                "Do you accept this result, reject it, or send it back for repairs?"
+            )
+        else:
+            # No verified proof — escalate
+            results_text = _format_missing_proof(goal, verification)
+            question_text = (
+                "No verified proof of work was found. The steps produced only "
+                "text output with no independently verifiable artifacts. "
+                "Accept anyway, reject, or send back for repairs?"
+            )
+
+        questions = [CheckInQuestion(
+            question=question_text,
+            type="choice",
+            options=["Accept", "Reject", "Send back for repairs"],
+            required=True,
+        )]
+
         return await create_check_in(
             goal_id=goal.id,
             type=CheckInType.COMPLETION,
             progress_summary=content["progress_summary"],
             next_steps=content["next_steps"],
-            results=content["results"],
-            questions=content["questions"],
+            results=results_text,
+            questions=questions,
         )
 
     async def process_response(self, check_in_id: str) -> dict:
@@ -643,6 +749,71 @@ class CheckInEngine:
                             "user_feedback": check_in.response or "",
                         }, goal.id)
                         actions.append("goal_rejected_revision_needed")
+                    elif "repair" in answer.lower() or "send back" in answer.lower():
+                        # Send back for repairs: append a new step with a
+                        # verifier-driven instruction and re-activate the goal.
+                        repair_desc = (
+                            "Produce verifiable proof of work for this goal. "
+                            "The verifier found no independently verifiable "
+                            "artifacts (no merged PR, no committed files, no "
+                            "passing tests). Implement the work in the repo and "
+                            "create a PR, or write files and run tests. If the "
+                            "work is a stateful operation (migration, backfill, "
+                            "deployment), run it through the witness so the "
+                            "evidence is captured."
+                        )
+                        from ..db import create_step as _create_step
+                        await _create_step(
+                            goal_id=goal.id,
+                            title="Repair: produce verifiable proof of work",
+                            description=repair_desc,
+                        )
+                        await update_goal_status(goal.id, GoalStatus.ACTIVE)
+                        await audit("goal_sent_back_for_repairs", {
+                            "check_in_id": check_in_id,
+                            "user_feedback": check_in.response or "",
+                        }, goal.id)
+                        actions.append("goal_sent_back_for_repairs")
+
+                elif q.type == "choice" and check_in.type == CheckInType.COMPLETION:
+                    # Three-option completion choice (Accept/Reject/Repair)
+                    choice = answer.lower()
+                    if "accept" in choice:
+                        await update_goal_status(goal.id, GoalStatus.COMPLETED)
+                        await update_goal_progress(goal.id, 1.0)
+                        await audit("goal_accepted", {
+                            "check_in_id": check_in_id,
+                        }, goal.id)
+                        actions.append("goal_accepted")
+                    elif "reject" in choice:
+                        await audit("goal_rejected", {
+                            "check_in_id": check_in_id,
+                            "user_feedback": check_in.response or "",
+                        }, goal.id)
+                        actions.append("goal_rejected")
+                    elif "repair" in choice or "send back" in choice:
+                        repair_desc = (
+                            "Produce verifiable proof of work for this goal. "
+                            "The verifier found no independently verifiable "
+                            "artifacts (no merged PR, no committed files, no "
+                            "passing tests). Implement the work in the repo and "
+                            "create a PR, or write files and run tests. If the "
+                            "work is a stateful operation (migration, backfill, "
+                            "deployment), run it through the witness so the "
+                            "evidence is captured."
+                        )
+                        from ..db import create_step as _create_step
+                        await _create_step(
+                            goal_id=goal.id,
+                            title="Repair: produce verifiable proof of work",
+                            description=repair_desc,
+                        )
+                        await update_goal_status(goal.id, GoalStatus.ACTIVE)
+                        await audit("goal_sent_back_for_repairs", {
+                            "check_in_id": check_in_id,
+                            "user_feedback": check_in.response or "",
+                        }, goal.id)
+                        actions.append("goal_sent_back_for_repairs")
 
                 elif q.type == "choice" and check_in.type == CheckInType.CLARIFICATION:
                     choice = answer.lower()

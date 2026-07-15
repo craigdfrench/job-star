@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from ..models import ExecutionResult, Goal, Step
+from ..models import ExecutionResult, Goal, Step, Artifact
 from ..router import route
 from ..gatehouse import execute as execute_ai
 from ..gatehouse import GatewayMonitor
@@ -490,6 +490,25 @@ Output ONLY file blocks."""
                     success_msg += f"\nPush/PR warning: {push_error}"
                 success_msg += f"\nFiles: {', '.join(written)}\n\n{result.content[:800]}"
 
+                # Declare proof-of-work artifacts for the verifier to re-check.
+                # The implementor only declares what it actually did — the
+                # verifier independently confirms each claim.
+                artifacts: list[Artifact] = []
+                if pr_ok and pr_url:
+                    artifacts.append(Artifact(kind="pr", value=pr_url, repo=self.repo_path))
+                for fpath in written:
+                    artifacts.append(Artifact(kind="file", value=fpath, repo=self.repo_path))
+                if last_test_result and last_test_result.passed:
+                    artifacts.append(Artifact(
+                        kind="test_pass", value=self.test_command, repo=self.repo_path,
+                    ))
+                # Capture the commit SHA for commit-kind verification
+                code, sha_out, _ = self._git(["rev-parse", "HEAD"], work_dir)
+                if code == 0 and sha_out.strip():
+                    artifacts.append(Artifact(
+                        kind="commit", value=sha_out.strip(), repo=self.repo_path,
+                    ))
+
                 return ExecutionResult(
                     content=success_msg,
                     model=result.model,
@@ -497,6 +516,7 @@ Output ONLY file blocks."""
                     output_tokens=result.output_tokens,
                     success=True,
                     x_gatehouse=result.x_gatehouse,
+                    artifacts=artifacts,
                 )
             else:
                 # Tests failed — feed back for next iteration

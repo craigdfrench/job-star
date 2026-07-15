@@ -244,6 +244,46 @@ class RoutingDecision:
 
 
 @dataclass
+class Artifact:
+    """A verifiable artifact declared by the implementor (executor).
+
+    The implementor populates this from what it actually did — a PR it created,
+    a commit it pushed, files it wrote, a test command that passed, or a
+    command it ran through the witness. The verifier independently re-checks
+    each claim against ground truth (gh API, git, test re-run, witness lookup)
+    and sets `verified` + `verification_note`.
+
+    The implementor never sets `verified` — that's the verifier's job. This
+    separation of duties is the core of the proof-of-work system.
+    """
+    kind: str  # "pr", "commit", "file", "test_pass", "witnessed", "command"
+    value: str  # PR URL, commit sha, file path, test command, evidence GUID, command string
+    repo: str = ""  # repo path or URL for pr/commit/file/test_pass
+    # Set by the verifier, not the implementor.
+    verified: bool = False
+    verification_note: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "value": self.value,
+            "repo": self.repo,
+            "verified": self.verified,
+            "verification_note": self.verification_note,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "Artifact":
+        return cls(
+            kind=d.get("kind", ""),
+            value=d.get("value", ""),
+            repo=d.get("repo", ""),
+            verified=d.get("verified", False),
+            verification_note=d.get("verification_note", ""),
+        )
+
+
+@dataclass
 class ExecutionResult:
     """Output of executing a step with an AI model."""
     content: str = ""
@@ -261,3 +301,6 @@ class ExecutionResult:
     # Gatehouse-provided metadata from usage.x_gatehouse (dev server).
     # Contains cost_class, routing_advice, quota_windows, retail_value, etc.
     x_gatehouse: dict[str, Any] = field(default_factory=dict)
+    # Proof-of-work: structured artifacts the executor declares it produced.
+    # The verifier independently re-checks these at the completion gate.
+    artifacts: list[Artifact] = field(default_factory=list)
