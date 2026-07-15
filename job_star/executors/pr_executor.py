@@ -432,7 +432,11 @@ To delete a file: ## Delete: path/to/file{feedback_block}
 
 Output ONLY file blocks."""
 
-            result = await execute_ai(user, model=routing.model, system_prompt=system)
+            # Use a generous max_tokens for code generation: the default 4096
+            # truncates multi-file Go output mid-file, so the closing code fence
+            # never appears and parse_file_blocks finds no complete block (the
+            # "No file changes were generated" failure). 16384 fits large files.
+            result = await execute_ai(user, model=routing.model, system_prompt=system, max_tokens=16384)
             if not result.success:
                 self.gateway_monitor.record_failure(routing.model, result.error or "error")
                 return result
