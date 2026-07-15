@@ -44,11 +44,18 @@ async def test_health_unauthenticated(client):
     """/health is public."""
     resp = await client.get("/health")
     assert resp.status_code == 200
-    assert resp.json()["status"] == "ok"
+    assert resp.json()["status"] == "healthy"
 
 
-async def test_intake_requires_auth(client):
-    """POST /intake requires authentication."""
+async def test_intake_requires_auth(client, monkeypatch):
+    """POST /intake requires authentication from a non-trusted source.
+
+    The API trusts localhost/Tailscale by design (the tailnet is the security
+    boundary). To test that auth IS enforced for external clients, disable
+    localhost trust for this test so the ASGI test client (which appears as
+    127.0.0.1) is treated as untrusted.
+    """
+    monkeypatch.setenv("JOB_STAR_TRUST_LOCALHOST", "0")
     resp = await client.post("/api/v1/intake", json={"title": "API Test: no auth"})
     assert resp.status_code == 401
 

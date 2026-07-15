@@ -28,14 +28,22 @@ LOCALHOST_NETS = [ipaddress.ip_network("127.0.0.0/8"), ipaddress.ip_network("::1
 
 
 def _is_tailscale_or_localhost(client_ip: str) -> bool:
-    """Check if the request comes from the Tailscale network or localhost."""
+    """Check if the request comes from the Tailscale network or localhost.
+
+    Localhost trust can be disabled by setting JOB_STAR_TRUST_LOCALHOST=0,
+    which is useful for testing auth enforcement without a real external IP.
+    Tailscale-network trust is always applied (the tailnet is the security
+    boundary in production).
+    """
     try:
         ip = ipaddress.ip_address(client_ip)
         if ip in TAILSCALE_NET:
             return True
-        for net in LOCALHOST_NETS:
-            if ip in net:
-                return True
+        trust_localhost = os.environ.get("JOB_STAR_TRUST_LOCALHOST", "1") != "0"
+        if trust_localhost:
+            for net in LOCALHOST_NETS:
+                if ip in net:
+                    return True
     except (ValueError, ipaddress.AddressValueError):
         pass
     return False
