@@ -384,27 +384,68 @@ def _strip_leading_comments(stmt: str) -> str:
 
 
 def _split_sql_statements(sql: str) -> list[str]:
-    """Split SQL into statements, respecting $$ blocks.
+    """Split SQL into statements, respecting $$ dollar-quote blocks.
 
     Each returned statement has leading blank lines and full-line -- comments
     stripped so it begins with actual SQL. This ensures callers' startswith()
     checks (e.g. "CREATE TABLE IF NOT EXISTS") work even when the statement is
     preceded by a comment block in the .sql file.
+
+    Dollar-quote tracking scans the whole stream for paired $$ tokens rather
+    than counting $$ per line. The per-line count was buggy: a line like
+    "$$ LANGUAGE plpgsql" has one $$ (odd), which toggled the state off
+    prematurely, so a following "END;" semicolon fired while NOT in a dollar
+    quote and split the statement mid-function.
     """
-    statements = []
-    current = []
+    statements: list[str] = []
+    current: list[str] = []
     in_dollar_quote = False
     for line in sql.split("\n"):
         stripped = line.strip()
-        if "$$" in stripped:
-            # Toggle dollar quote state
-            count = stripped.count("$$")
-            if count % 2 == 1:
-                in_dollar_quote = not in_dollar_quote
-            current.append(line)
-            continue
         if in_dollar_quote:
+            # Inside a $$ block: keep collecting until we find the closing $$.
+            # A line may contain the closing $$ followed by more text (e.g.
+            # "$$ LANGUAGE plpgsql"), so we must scan the line, not just test
+            # for its presence.
             current.append(line)
+            idx = 0
+            while idx < len(line):
+                pos = line.find("$$", idx)
+                if pos == -1:
+                    break
+                # Found a $$ — this is the closing delimiter.
+                in_dollar_quote = False
+                idx = pos + 2
+                # Continue scanning the remainder of the line for a possible
+                # reopening or a semicolon that ends the statement.
+                remainder = line[idx:]
+                if remainder.rstrip().endswith(";"):
+                    statements.append(_strip_leading_comments("\n".join(current)))
+                    current = []
+                break
+            continue
+        # Not in a dollar quote: check whether this line opens one.
+        # Scan for $$ to detect an opening delimiter that may be followed by
+        # more text on the same line (e.g. "AS $$").
+        pos = line.find("$$")
+        if pos != -1:
+            # Starting from the first $$, toggle state for each $$ on the
+            # line. The first $$ opens the quote, a second on the same line
+            # would close it, etc.
+            idx = pos
+            still_inside = False  # first $$ below toggles this to True
+            while idx < len(line):
+                p = line.find("$$", idx)
+                if p == -1:
+                    break
+                still_inside = not still_inside
+                idx = p + 2
+            current.append(line)
+            in_dollar_quote = still_inside
+            # If the line closed the quote and ends with ';', flush.
+            if not still_inside and stripped.endswith(";"):
+                statements.append(_strip_leading_comments("\n".join(current)))
+                current = []
             continue
         if stripped.endswith(";"):
             current.append(line)

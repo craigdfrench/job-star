@@ -81,6 +81,31 @@ def test_dollar_quote_block_not_split_on_internal_semicolon():
     assert "LANGUAGE plpgsql" in stmts[0]
 
 
+def test_dollar_quote_closing_shares_line_with_text():
+    """A closing $$ that shares a line with other text (e.g. "$$ LANGUAGE
+    plpgsql;") must not split the function body, and the following statement
+    must be separate. Regression test for Vikunja #1309: the old per-line $$
+    count toggled state off prematurely, splitting at the internal END;."""
+    sql = (
+        "CREATE OR REPLACE FUNCTION f()\n"
+        "RETURNS TRIGGER AS $$\n"
+        "BEGIN\n"
+        "  NEW.x = 1;\n"
+        "  RETURN NEW;\n"
+        "END;\n"
+        "$$ LANGUAGE plpgsql;\n\n"
+        "CREATE TRIGGER foo_updated BEFORE UPDATE ON foo\n"
+        "    FOR EACH ROW EXECUTE FUNCTION f();\n"
+    )
+    stmts = [s.strip() for s in _split_sql_statements(sql) if s.strip()]
+    assert len(stmts) == 2, f"expected 2 statements, got {len(stmts)}"
+    assert "LANGUAGE plpgsql" in stmts[0]
+    assert "CREATE TRIGGER" in stmts[1]
+    # The internal END; must not have split the function
+    assert "END;" in stmts[0]
+    assert "RETURN NEW;" in stmts[0]
+
+
 def test_empty_and_comment_only_input():
     """Comment-only or empty input yields no runnable statements after stripping."""
     # A comment with no following ;-terminated statement becomes empty after
