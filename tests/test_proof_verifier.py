@@ -271,3 +271,38 @@ class TestVerifyArtifacts:
         summary = result.summary()
         assert "1 verified" in summary
         assert "command" in summary
+
+
+class TestParseWitnessBlocks:
+    """Tests for the witness directive parser in pr_executor."""
+
+    def test_parses_witness_directives(self):
+        """## Witness: directives should be parsed into command strings."""
+        from job_star.executors.pr_executor import parse_witness_blocks
+        content = """## File: src/main.py
+```python
+print('hello')
+```
+
+## Witness: python migrate.py --upgrade
+## Witness: node enhance.mjs --embeddings --all
+"""
+        cmds = parse_witness_blocks(content)
+        assert len(cmds) == 2
+        assert "python migrate.py --upgrade" in cmds[0]
+        assert "node enhance.mjs" in cmds[1]
+
+    def test_no_witness_directives(self):
+        """Content without witness directives should return empty list."""
+        from job_star.executors.pr_executor import parse_witness_blocks
+        content = "Just regular text output with no directives."
+        cmds = parse_witness_blocks(content)
+        assert len(cmds) == 0
+
+    def test_strips_backticks(self):
+        """Witness commands wrapped in backticks should be stripped."""
+        from job_star.executors.pr_executor import parse_witness_blocks
+        content = "## Witness: `echo hello`"
+        cmds = parse_witness_blocks(content)
+        assert len(cmds) == 1
+        assert cmds[0] == "echo hello"

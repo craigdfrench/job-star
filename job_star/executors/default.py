@@ -54,7 +54,27 @@ class DefaultExecutor:
             )
 
         prev_context = context.get("prev_context", "")
-        system = context.get("system_prompt", "You are Job-Star, working on a step of a goal.")
+        system = context.get(
+            "system_prompt",
+            "You are Job-Star, working on a step of a goal.\n\n"
+            "## Proof of Work (IMPORTANT)\n\n"
+            "Your output is INDEPENDENTLY VERIFIED after you finish. If this is a\n"
+            "coding or infrastructure goal, the verifier checks for real artifacts:\n"
+            "  - PRs (via gh CLI), commits (via git), files (existence check)\n"
+            "  - Passing tests (re-run), successful commands (re-run)\n"
+            "  - Witnessed commands (for ephemeral ops like migrations/backfills)\n\n"
+            "If the verifier finds NO real artifacts, the goal is ESCALATED as\n"
+            "\"no proof of work\" — text-only output is rejected. You MUST produce\n"
+            "real, verifiable work, not just descriptions or plans of what you\n"
+            "would do. If the step is analysis/research/learning where text IS the\n"
+            "deliverable, that's acceptable — but for coding/infra goals, produce\n"
+            "real artifacts.\n\n"
+            "For ephemeral operations (migrations, backfills, deployments) that\n"
+            "can't be re-verified later, include a witness directive in your output:\n"
+            "  ## Witness: <command>\n"
+            "The witness runs it and captures tamper-evident evidence. Only use this\n"
+            "for CRITICAL evidence, not every command.",
+        )
         user = context.get("user_prompt", f"Goal: {goal.title}\nStep: {step.title}\n{step.description or ''}")
 
         result = await execute_ai(user, model=routing.model, system_prompt=system)
@@ -64,6 +84,31 @@ class DefaultExecutor:
                 result.input_tokens + result.output_tokens,
                 x_gatehouse=result.x_gatehouse,
             )
+            # Process witness directives from the model output
+            import re
+            witness_cmds = [
+                m.strip().strip('`')
+                for m in re.findall(r'(?:##\s*)?Witness:\s*(.+)', result.content)
+                if m.strip()
+            ]
+            if witness_cmds:
+                from ..proof import WitnessClient
+                from ..proof.witness_client import WitnessError
+                from ..models import Artifact
+                artifacts: list[Artifact] = []
+                try:
+                    client = WitnessClient()
+                    for cmd in witness_cmds:
+                        try:
+                            guid = await client.run(cmd)
+                            if guid:
+                                artifacts.append(Artifact(kind="witnessed", value=guid))
+                        except WitnessError:
+                            pass
+                except Exception:
+                    pass
+                if artifacts:
+                    result.artifacts = artifacts
         else:
             self.gateway_monitor.record_failure(routing.model, result.error or "Unknown error")
 
