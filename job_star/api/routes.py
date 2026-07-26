@@ -58,6 +58,8 @@ def _goal_to_summary(g, step_counts: dict | None = None, pending_checkin_id: str
         updated_at=g.updated_at,
         expert=g.expert,
         requested_by=g.requested_by,
+        source=g.source,
+        metadata=g.metadata or {},
         step_count=sc.get("total", 0),
         completed_steps=sc.get("completed", 0),
         failed_steps=sc.get("failed", 0),
@@ -81,6 +83,8 @@ async def _goal_with_steps(goal_id: str) -> dict:
         "progress": g.progress,
         "created_at": g.created_at,
         "updated_at": g.updated_at,
+        "source": g.source,
+        "metadata": g.metadata or {},
         "steps": [s.__dict__ for s in steps],
         "conflicts": conflicts,
     }
@@ -251,6 +255,76 @@ async def abandon_goal_api(
     await audit("goal_abandoned", {"via": "api", "user": user.email}, goal_id)
     await publish("goal.abandoned", {"goal_id": goal_id})
     return {"success": True, "goal_id": goal_id, "status": "abandoned"}
+
+@router.post("/goals/{goal_id}/note")
+async def add_goal_note_api(
+    goal_id: str,
+    body: dict,
+    user=Depends(get_current_user),
+):
+    """Append an arbitrary note/checkpoint to a goal's audit trail.
+
+    Lightweight append for the Agent Control Plane: session-scale tasks write
+    checkpoints here (event='checkpoint') so they are durable and
+    cross-machine, not just local. Distinct from /check-in, which routes
+    through an LLM. Body: {"note": "...", "event": "checkpoint" (default 'note')}.
+    """
+    from job_star.db import get_goal, audit
+    goal = await get_goal(goal_id)
+    if not goal:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    note = (body.get("note") or "").strip()
+    if not note:
+        raise HTTPException(status_code=400, detail="'note' is required")
+    event = (body.get("event") or "note").strip()
+    await audit(event, {"note": note, "via": "control-plane", "user": user.email}, goal_id)
+    return {"success": True, "goal_id": goal_id, "event": event}
+
+
+@router.get("/goals/{goal_id}/notes")
+async def get_goal_notes_api(
+    goal_id: str,
+    event: str | None = None,
+    limit: int = 200,
+    user=Depends(get_current_user),
+):
+    """Return a goal's audit_trail entries (notes/checkpoints).
+
+    Optional ?event=checkpoint filters to a specific event kind. Used by the
+    Agent Control Plane `control resume` to pull durable, cross-machine
+    checkpoints written via POST /goals/{id}/note.
+    """
+    from job_star.db import get_pool, get_goal
+    goal = await get_goal(goal_id)
+    if not goal:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if event:
+            rows = await conn.fetch(
+                """SELECT id, event, details, timestamp FROM audit_trail
+                   WHERE goal_id = $1 AND event = $2
+                   ORDER BY timestamp ASC LIMIT $3""",
+                goal_id, event, limit,
+            )
+        else:
+            rows = await conn.fetch(
+                """SELECT id, event, details, timestamp FROM audit_trail
+                   WHERE goal_id = $1 ORDER BY timestamp ASC LIMIT $2""",
+                goal_id, limit,
+            )
+    import json as _json
+    return {
+        "goal_id": goal_id,
+        "count": len(rows),
+        "notes": [
+            {"id": str(row["id"]), "event": row["event"],
+             "details": row["details"] if isinstance(row["details"], dict) else _json.loads(row["details"] or "{}"),
+             "timestamp": row["timestamp"].isoformat() if row["timestamp"] else None}
+            for row in rows
+        ],
+    }
+
 
 
 @router.post("/ask", response_model=AskResponse, status_code=status.HTTP_201_CREATED)

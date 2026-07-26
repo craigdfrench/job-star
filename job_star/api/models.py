@@ -63,6 +63,8 @@ class GoalSummary(BaseModel):
     updated_at: datetime
     expert: Optional[str] = None
     requested_by: Optional[str] = None
+    source: Optional[str] = None
+    metadata: dict = Field(default_factory=dict)
     step_count: int = 0
     completed_steps: int = 0
     failed_steps: int = 0
