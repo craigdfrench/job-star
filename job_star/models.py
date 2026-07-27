@@ -71,6 +71,7 @@ class StepStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     BLOCKED = "blocked"
+    ABANDONED = "abandoned"
 
 
 class ConflictType(str, Enum):
