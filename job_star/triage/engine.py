@@ -65,6 +65,11 @@ EXPERT_KEYWORDS: dict[str, list[str]] = {
         "admin tokens", "trust tier", "deferred jobs", "prompt packing",
         "/etc/gatehouse", "100.64.158.87:8090", "gatehouse-ai.craigdfrench.com",
     ],
+    "ci": [
+        "ci", "continuous integration", "build gate", "test gate",
+        "ci gate", "build/test", "build and test", "ci_pass", "ci_fail",
+        "build gate", "test gate",
+    ],
     "research": [
         "tickle file", "research", "monitor", "check-in", "check in",
         "recurring", "monthly check", "track developments", "follow up on",

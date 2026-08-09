@@ -63,6 +63,12 @@ class GoalStatus(str, Enum):
     COMPLETED = "completed"
     BLOCKED = "blocked"
     ABANDONED = "abandoned"
+    # CI gate outcomes (set by the CI executor — docs/development-workflow-
+    # specification.md §3). The goals.status column is unconstrained TEXT, so
+    # these persist without a schema migration; update_goal_status handles
+    # them via its generic UPDATE branch.
+    CI_PASS = "ci_pass"
+    CI_FAIL = "ci_fail"
 
 
 class StepStatus(str, Enum):
