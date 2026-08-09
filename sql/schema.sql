@@ -301,6 +301,7 @@ CREATE TABLE IF NOT EXISTS experts (
 INSERT INTO experts (name, description, required_machine, context_path, repo_path, test_command, base_branch) VALUES
 ('gatehouse-ai', 'Gatehouse-AI developer expert (curated docs + codebase knowledge)', 'DESKTOP-RNK6J72', '/home/craig/gatehouse-ai', '/home/craig/gatehouse-ai', 'go test ./...', 'main'),
 ('ci', 'CI build/test gate (no AI): clones metadata.ref, runs metadata.command, records test_result', NULL, NULL, NULL, NULL, NULL),
+('review', 'Multi-model adversarial review gate (§4): shells out to intense-public/private-review, parses VERDICT line, posts screened notes to PR', NULL, NULL, NULL, NULL, NULL),
 ('research', 'Recurring research/tickle-file agent (monitors topics during idle time)', NULL, NULL, NULL, NULL, NULL)
 ON CONFLICT (name) DO NOTHING;
 
