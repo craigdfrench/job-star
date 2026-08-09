@@ -53,6 +53,7 @@ DEFAULT_MAPPING = {
     "ocr": "vision",
     "image": "vision",
     "screenshot": "vision",
+    "ci": "tools",
     "tool": "tools",
     "api": "tools",
     "execute": "tools",

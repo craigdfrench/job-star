@@ -59,6 +59,7 @@
   "image": "vision",
   "screenshot": "vision",
   "vision": "vision",
+  "ci": "tools",
   "tool": "tools",
   "tools": "tools",
   "api": "tools",
