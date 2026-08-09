@@ -69,6 +69,13 @@ class GoalStatus(str, Enum):
     # them via its generic UPDATE branch.
     CI_PASS = "ci_pass"
     CI_FAIL = "ci_fail"
+    # Review gate outcomes (set by the ReviewExecutor — docs/development-
+    # workflow-specification.md §4). Same persistence story as the CI statuses:
+    # goals.status is unconstrained TEXT, so these need no schema migration and
+    # are written via update_goal_status's generic UPDATE branch.
+    REVIEW_PASS = "review_pass"
+    REVIEW_BLOCK = "review_block"
+    REVIEW_ERROR = "review_error"
 
 
 class StepStatus(str, Enum):

@@ -70,6 +70,12 @@ EXPERT_KEYWORDS: dict[str, list[str]] = {
         "ci gate", "build/test", "build and test", "ci_pass", "ci_fail",
         "build gate", "test gate",
     ],
+    "review": [
+        "review gate", "multi-model review", "adversarial review",
+        "intense-public-review", "intense-private-review", "code review",
+        "pr review", "merge gate", "review_pass", "review_block",
+        "review_error", "verdict: pass", "verdict: block",
+    ],
     "research": [
         "tickle file", "research", "monitor", "check-in", "check in",
         "recurring", "monthly check", "track developments", "follow up on",
