@@ -50,6 +50,10 @@ from typing import Any, Optional
 
 from ..models import Artifact, ExecutionResult, Goal, GoalStatus, Step
 from . import Executor
+# Share the slug->URL normalizer with the CI executor so both gates treat
+# metadata.repo identically: it's the "owner/name" slug the deploy gate uses,
+# but git ls-remote/clone need a fetchable URL.
+from .ci import _to_git_url
 
 # --------------------------------------------------------------------------- #
 # Constants
@@ -195,6 +199,12 @@ class ReviewExecutor(Executor):
         # --- §4.1: read metadata -------------------------------------------
         ref: Optional[str] = meta.get("ref")
         repo: Optional[str] = meta.get("repo")
+        # metadata.repo is the owner/name slug the deploy gate identifies a
+        # repo by, but git ls-remote/clone need a fetchable URL. Normalize
+        # once up front and reuse it for every git op below; keep the raw
+        # slug for state/audit (so reported artifacts look the same as the
+        # CI gate's).
+        repo_url: Optional[str] = _to_git_url(repo) if repo else None
         sensitivity: str = (meta.get("sensitivity") or "").strip().lower()
         preset: str = (meta.get("preset") or "default").strip() or "default"
         base: str = (meta.get("base") or DEFAULT_BASE).strip() or DEFAULT_BASE
@@ -233,6 +243,11 @@ class ReviewExecutor(Executor):
                     goal, state, GoalStatus.REVIEW_ERROR,
                     error=f"review: missing metadata.{', '.join(k for k in ('ref','repo') if not meta.get(k))}",
                 )
+            if not repo_url:
+                return await self._finish(
+                    goal, state, GoalStatus.REVIEW_ERROR,
+                    error=f"review: metadata.repo '{repo}' is neither an owner/name slug nor a git URL",
+                )
             if sensitivity not in ("public", "private"):
                 return await self._finish(
                     goal, state, GoalStatus.REVIEW_ERROR,
@@ -247,7 +262,7 @@ class ReviewExecutor(Executor):
             # --- §4.2/§4.3: prepare throwaway worktrees ----------------------
             target_worktree = self._make_workdir(goal, "target")
             state["target_worktree"] = target_worktree
-            ok, err = self._prepare_target_worktree(repo, ref, target_worktree)
+            ok, err = self._prepare_target_worktree(repo_url, ref, target_worktree)
             if not ok:
                 return await self._finish(
                     goal, state, GoalStatus.REVIEW_ERROR, error=err,
@@ -370,16 +385,20 @@ class ReviewExecutor(Executor):
         self, repo: str, ref: str, work_dir: str,
     ) -> tuple[bool, str]:
         """Clone the target repo and check out the ref (detached)."""
+        # repo may arrive as the owner/name slug the deploy gate uses; git needs
+        # a URL. Keep this self-normalizing so the method is safe regardless of
+        # whether the caller already normalized (execute() also normalizes).
+        repo_url = _to_git_url(repo) or repo
         if os.path.exists(work_dir):
             shutil.rmtree(work_dir, ignore_errors=True)
-        clone = self._git(["clone", "--no-checkout", repo, work_dir], os.getcwd())
+        clone = self._git(["clone", "--no-checkout", repo_url, work_dir], os.getcwd())
         if clone.returncode != 0:
             return False, f"review: clone failed: {clone.stderr.strip() or clone.stdout.strip()}"
         # Fetch the specific ref so the SHA is present even if the default
         # branch differed. A fetch failure is non-fatal (adapter has its own
         # fetch + gh fallback).
         self._git(["fetch", "origin", ref], work_dir)
-        sha = self._resolve_ref(repo, ref)
+        sha = self._resolve_ref(repo_url, ref)
         target = sha or "FETCH_HEAD"
         checkout = self._git(["checkout", "--detach", target], work_dir)
         if checkout.returncode != 0:
@@ -402,7 +421,8 @@ class ReviewExecutor(Executor):
 
     def _resolve_ref(self, repo: str, ref: str) -> Optional[str]:
         """Resolve a ref to a SHA via `git ls-remote` (no clone needed)."""
-        result = self._git(["ls-remote", repo, ref], os.getcwd())
+        repo_url = _to_git_url(repo) or repo
+        result = self._git(["ls-remote", repo_url, ref], os.getcwd())
         if result.returncode != 0:
             return None
         lines = result.stdout.strip().splitlines()
