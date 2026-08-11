@@ -22,6 +22,7 @@ async def intake(
     metadata: dict | None = None,
     check_conflicts: bool = True,
     requested_by: str = "",
+    expert: str | None = None,
 ) -> tuple[Goal | None, TriageResult]:
     """Process a raw intake request through the full pipeline.
 
@@ -71,14 +72,16 @@ async def intake(
         })
         return None, result
 
-    # Create the goal
+    # Create the goal. An explicit expert from the caller overrides triage's
+    # assignment (workflow-spec §4.2 routes review goals via expert=review).
+    decide_expert = expert or result.expert
     goal = await create_goal(
         title=title,
         description=description,
         domain=result.domain,
         urgency=result.urgency,
         source=source,
-        expert=result.expert,
+        expert=decide_expert,
         requested_by=requested_by,
         metadata={
             **(metadata or {}),

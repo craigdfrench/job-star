@@ -89,7 +89,7 @@ REAL_FAILURE_STATUSES = {
 }
 # Statuses that mean a job is done (no point polling further).
 TERMINAL_STATUSES = {
-    "complete", "completed", "done", "failed", "cancelled", "error", "timeout",
+    "complete", "completed", "done", "succeeded", "failed", "cancelled", "error", "timeout",
 }
 
 ADAPTER_TIMEOUT_S = 120
@@ -360,6 +360,10 @@ class ReviewExecutor(Executor):
         path = os.path.join(
             WORKTREE_ROOT, f"{goal.id[:8]}-{label}-{slug}-{ts}-{os.getpid()}",
         )
+        # Create the directory so callers can write into it (the out_dir for
+        # findings.md / skill outputs is created here; the target/adapter dirs
+        # are subsequently created by git clone).
+        os.makedirs(path, exist_ok=True)
         return path
 
     def _prepare_target_worktree(
@@ -770,7 +774,7 @@ class ReviewExecutor(Executor):
 
         Any non-complete status (including a missing/None status) is treated as
         a failure so the retry path can resubmit."""
-        if job.get("status") not in ("complete", "completed", "done"):
+        if job.get("status") not in ("complete", "completed", "done", "succeeded"):
             return f"[failed: {job.get('status', 'unknown')} — {job.get('error', '')}]"
         response = job.get("response") or job.get("result") or job.get("output")
         if response is None:
