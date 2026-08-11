@@ -52,6 +52,7 @@ async def intake(
         urgency_override=urgency_override,
         domain_override=domain_override,
         metadata=metadata or {},
+        expert=expert,
     )
 
     # Triage

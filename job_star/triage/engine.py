@@ -218,14 +218,32 @@ def _check_duplicates(
     """Check if request duplicates an existing goal.
 
     Returns (is_duplicate, duplicate_goal_id, confidence).
+
+    Expert-aware: when the caller pins an explicit expert, a goal owned by a
+    DIFFERENT expert is not a duplicate (a PR needs both a ci_pass goal and a
+    review_pass goal for the deploy gate). When both have a (ref, repo)
+    metadata key, they are distinguished only if the goal exists for the same
+    ref under the same expert or under a matching expert affinity.
     """
     request_tokens = _tokenize(request.full_text)
+    request_key = request.dedupe_key
 
     best_match: Optional[str] = None
     best_score = 0.0
 
     for goal in existing_goals:
         if goal.status == GoalStatus.COMPLETED or goal.status == GoalStatus.ABANDONED:
+            continue
+        # If the request pins an explicit expert, a goal in a different expert is
+        # a distinct gate/artifact ({goal.expert} vs {request.expert}) — not a dup.
+        if request.expert and goal.expert and goal.expert != request.expert:
+            continue
+        # If both have a ref/repo metadata key and they differ by more than
+        # expert, they are distinct goals for distinct refs — not a dup.
+        goal_meta = goal.metadata or {}
+        goal_key = (goal_meta.get("ref"), goal_meta.get("repo"))\
+            if goal_meta.get("ref") and goal_meta.get("repo") else None
+        if request_key and goal_key and request_key != goal_key:
             continue
         goal_text = f"{goal.title} {goal.description or ''}"
         goal_tokens = _tokenize(goal_text)

@@ -148,7 +148,7 @@ class Worker:
         try:
             if kind == "plan":
                 # Ensure the goal is planned before the step queue takes over
-                steps = await self.orch.plan_goal(goal_id)
+                steps = await self.orch.plan_goal(goal.id, model=self.model)
                 await publish_event("goal.planned", {"goal_id": goal_id, "job_id": str(job["id"]), "step_count": len(steps)})
 
             # If steps were created, continue to execute the next one
@@ -200,6 +200,19 @@ class Worker:
 
             print(f"  [{self.worker_id}] planning unstarted goal: {goal.title[:40]}", flush=True)
             try:
+                # Gate goals (ci/review) are pure single-step executors that run
+                # with no AI planning — AI-planning a build/test or review gate
+                # wastes a model call and fails when the worker has no model. Give
+                # them their single step directly so execution is deterministic.
+                if goal.expert in ("ci", "review"):
+                    from .db import create_step, get_steps
+                    existing = await get_steps(goal.id)
+                    if not existing:
+                        title = "Run ci gate" if goal.expert == "ci" else "Run review gate"
+                        await create_step(goal.id, title=title,
+                                          description=f"Run the {goal.expert} gate for this PR")
+                        return True
+                    return False
                 await self.orch.plan_goal(goal.id)
                 return True
             except Exception as exc:
