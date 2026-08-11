@@ -226,10 +226,22 @@ class IntakeRequest:
     urgency_override: Optional[Urgency] = None  # user can specify
     domain_override: Optional[Domain] = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    expert: Optional[str] = None  # explicit expert routing (overrides triage)
 
     @property
     def full_text(self) -> str:
         return f"{self.title} {self.description}".strip().lower()
+    
+    @property
+    def dedupe_key(self) -> Optional[tuple[str, str]]:
+        """A (ref, repo) key from metadata when present, so gate goals for the
+        same PR ref across different experts are NOT deduped against each other
+        (a PR needs both a ci_pass and a review_pass goal for the deploy gate)."""
+        ref = (self.metadata or {}).get("ref")
+        repo = (self.metadata or {}).get("repo")
+        if ref and repo:
+            return (ref, repo)
+        return None
 
 
 @dataclass
