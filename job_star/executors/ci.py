@@ -47,6 +47,30 @@ SETUP_FAILURE_EXIT_CODE = -1
 _HEXADECIMAL = set("0123456789abcdefABCDEF")
 
 
+def _to_git_url(repo: str) -> Optional[str]:
+    """Normalize a metadata.repo value into a fetchable git URL.
+
+    The deploy gate identifies a repo by its "owner/name" slug (shortest form),
+    but git ls-remote/clone require a URL. Accept either form and return a URL:
+      - "owner/name"        -> "https://github.com/owner/name"
+      - "https://github.com/owner/name" or ".git"-suffixed variant -> unchanged
+    Returns None when the value is neither (not usable by git).
+    """
+    if not repo:
+        return None
+    r = repo.strip()
+    if not r:
+        return None
+    # Already a URL (https, ssh, git).
+    if "://" in r or r.startswith("git@"):
+        return r
+    # owner/name slug. Reject a bare name (no slash) so a typo doesn't silently
+    # become https://github.com/singleword.
+    if "/" in r and not r.startswith("/") and not r.endswith("/"):
+        return f"https://github.com/{r}"
+    return None
+
+
 class CIExecutor(Executor):
     """Build/test gate executor. No AI; pure subprocess + DB."""
 
@@ -64,6 +88,11 @@ class CIExecutor(Executor):
         ref: Optional[str] = meta.get("ref")
         repo: Optional[str] = meta.get("repo")
         command: Optional[str] = meta.get("command")
+        # The deploy gate identifies a repo by its "owner/name" slug (metadata.repo),
+        # but git ls-remote/clone need a fetchable URL. Normalize a slug to a GitHub
+        # URL for git ops; raise a clear error when the value is neither a slug nor
+        # a URL we can derive one from.
+        repo_url = _to_git_url(repo)
 
         if not ref or not repo or not command:
             missing = ", ".join(
@@ -80,10 +109,22 @@ class CIExecutor(Executor):
                 output_tail=f"metadata missing: {missing}",
                 repo=repo or "",
             )
+        if not repo_url:
+            return await self._finish(
+                goal,
+                success=False,
+                error=f"ci: metadata.repo '{repo}' is neither an owner/name slug nor a git URL",
+                ref=ref,
+                command=command,
+                exit_code=SETUP_FAILURE_EXIT_CODE,
+                duration_s=0.0,
+                output_tail=f"unusable repo: {repo}",
+                repo=repo,
+            )
 
         work_dir = ""
         try:
-            sha = self._resolve_ref(repo, ref)
+            sha = self._resolve_ref(repo_url, ref)
             if not sha:
                 msg = f"ci: could not resolve ref '{ref}' in {repo}"
                 return await self._finish(
@@ -94,7 +135,7 @@ class CIExecutor(Executor):
                 )
 
             work_dir = os.path.join(WORKTREE_ROOT, sha)
-            ok, err = self._prepare_worktree(repo, ref, sha, work_dir)
+            ok, err = self._prepare_worktree(repo_url, ref, sha, work_dir)
             if not ok:
                 return await self._finish(
                     goal, success=False, error=err,
