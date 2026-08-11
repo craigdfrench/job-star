@@ -89,7 +89,7 @@ REAL_FAILURE_STATUSES = {
 }
 # Statuses that mean a job is done (no point polling further).
 TERMINAL_STATUSES = {
-    "complete", "completed", "done", "failed", "cancelled", "error", "timeout",
+    "complete", "completed", "done", "succeeded", "failed", "cancelled", "error", "timeout",
 }
 
 ADAPTER_TIMEOUT_S = 120
@@ -770,7 +770,7 @@ class ReviewExecutor(Executor):
 
         Any non-complete status (including a missing/None status) is treated as
         a failure so the retry path can resubmit."""
-        if job.get("status") not in ("complete", "completed", "done"):
+        if job.get("status") not in ("complete", "completed", "done", "succeeded"):
             return f"[failed: {job.get('status', 'unknown')} — {job.get('error', '')}]"
         response = job.get("response") or job.get("result") or job.get("output")
         if response is None:
