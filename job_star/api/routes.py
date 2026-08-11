@@ -122,6 +122,7 @@ async def intake(
         urgency_override=Urgency(req.urgency) if req.urgency else None,
         metadata=req.metadata,
         requested_by=requested_by,
+        expert=req.expert,
     )
     if goal is None:
         # Duplicate — triage detected an existing goal

@@ -64,6 +64,7 @@ class Orchestrator:
         domain_override: Domain | None = None,
         metadata: dict | None = None,
         requested_by: str = "",
+        expert: str | None = None,
     ) -> tuple[Goal | None, TriageResult]:
         """Add a goal through the full intake pipeline."""
         return await do_intake(
@@ -74,6 +75,7 @@ class Orchestrator:
             domain_override=domain_override,
             metadata=metadata,
             requested_by=requested_by,
+            expert=expert,
         )
 
     # ===================================================================

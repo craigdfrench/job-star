@@ -49,6 +49,10 @@ class IntakeRequest(BaseModel):
     source: str = "api"
     metadata: dict = Field(default_factory=dict)
     requested_by: str = ""
+    # Optional explicit expert routing (e.g. "review"). When set, overrides
+    # triage's expert assignment so callers can route a goal to a specific
+    # expert worker (workflow-spec §4.2 review goal). Empty = let triage decide.
+    expert: Optional[str] = None
 
 
 class GoalSummary(BaseModel):

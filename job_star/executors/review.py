@@ -360,6 +360,10 @@ class ReviewExecutor(Executor):
         path = os.path.join(
             WORKTREE_ROOT, f"{goal.id[:8]}-{label}-{slug}-{ts}-{os.getpid()}",
         )
+        # Create the directory so callers can write into it (the out_dir for
+        # findings.md / skill outputs is created here; the target/adapter dirs
+        # are subsequently created by git clone).
+        os.makedirs(path, exist_ok=True)
         return path
 
     def _prepare_target_worktree(
