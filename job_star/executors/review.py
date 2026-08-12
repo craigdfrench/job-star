@@ -85,7 +85,7 @@ DEFAULT_BASE = "origin/main"
 # .gatehouse-ci.json are clamped up to these minimums.
 DEFAULT_PANEL_MAX_TOKENS = 8192
 DEFAULT_AGGREGATOR_MAX_TOKENS = 10240
-DEFAULT_MAX_RETRIES = 3
+DEFAULT_MAX_RETRIES = 5
 
 # Gatehouse job statuses that constitute a real failure warranting a retry.
 REAL_FAILURE_STATUSES = {
