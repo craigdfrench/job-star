@@ -167,9 +167,13 @@ VERDICT_SUFFIX = (
     "these two forms:\n"
     "  VERDICT: PASS\n"
     "  VERDICT: BLOCK (reason: <one concise sentence>)\n"
-    "Use PASS only if the change under review is safe to merge as-is. Use BLOCK "
-    "if there are any unresolved correctness, security, race-condition, or "
-    "test-coverage problems that must be fixed first. Do not omit this line."
+    "Use PASS as the default verdict. Use BLOCK only when there is a *critical, "
+    "concrete, and unresolved* problem: a correctness bug, a security flaw, a "
+    "data race, or a test-coverage gap that would allow a real defect to ship.\n"
+    "Style preferences, speculative hypotheticals, documentation nitpicks, or "
+    "requests for additional tests that do not block correctness are NOT "
+    "sufficient for BLOCK. If the strongest standing objection is not a "
+    "critical issue, verdict MUST be PASS. Do not omit this line."
 )
 
 
