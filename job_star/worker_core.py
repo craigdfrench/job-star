@@ -147,8 +147,13 @@ class Worker:
 
         try:
             if kind == "plan":
-                # Ensure the goal is planned before the step queue takes over
-                steps = await self.orch.plan_goal(goal.id, model=self.model)
+                # Ensure the goal is planned before the step queue takes over.
+                # NOTE: only `goal_id` is in scope here (the job-queue row carries
+                # goal_id, not the hydrated Goal). plan_goal() takes a goal_id and
+                # loads the goal itself, so use goal_id directly — referencing
+                # `goal` here raised NameError on the re-enqueue (POST
+                # /goals/{id}/work) path for goals that already have steps.
+                steps = await self.orch.plan_goal(goal_id, model=self.model)
                 await publish_event("goal.planned", {"goal_id": goal_id, "job_id": str(job["id"]), "step_count": len(steps)})
 
             # If steps were created, continue to execute the next one

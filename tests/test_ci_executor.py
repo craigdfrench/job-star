@@ -19,7 +19,12 @@ def test_url_passthrough():
 
 
 def test_ssh_url_passthrough():
+    # An ssh URL is fetchable as-is and is returned unchanged (any trailing
+    # .git is preserved — the function normalizes slugs to URLs, it does not
+    # rewrite URLs).
     assert _to_git_url("git@github.com:craigdfrench/gatehouse-ai.git") == \
+        "git@github.com:craigdfrench/gatehouse-ai.git"
+    assert _to_git_url("git@github.com:craigdfrench/gatehouse-ai") == \
         "git@github.com:craigdfrench/gatehouse-ai"
 
 
