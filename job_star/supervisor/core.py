@@ -39,7 +39,7 @@ class BudgetTracker:
     """Tracks token and cost usage per goal."""
     max_tokens_per_goal: int = 500_000  # 500K — enough for complex multi-step goals
     max_cost_per_goal: float = 5.0     # $5 per goal by default
-    max_step_retries: int = 3
+    max_step_retries: int = 5
 
     _goal_tokens: dict[str, int] = field(default_factory=dict)
     _goal_cost: dict[str, float] = field(default_factory=dict)
@@ -179,7 +179,7 @@ class Supervisor:
         self,
         max_tokens_per_goal: int = 500_000,
         max_cost_per_goal: float = 5.0,
-        max_step_retries: int = 3,
+        max_step_retries: int = 5,
     ):
         self.budget = BudgetTracker(
             max_tokens_per_goal=max_tokens_per_goal,
