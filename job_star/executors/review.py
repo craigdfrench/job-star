@@ -95,6 +95,11 @@ REAL_FAILURE_STATUSES = {
 TERMINAL_STATUSES = {
     "complete", "completed", "done", "succeeded", "failed", "cancelled", "error", "timeout",
 }
+# Statuses that mean a panelist job actually produced a usable verdict. Used by
+# the zero-panelist guard: if NO panelist reached one of these, the run is a
+# total panel failure and must NOT fall through to PASS-by-default (the
+# perplexity-rot incident was exactly this hollow PASS).
+PANEL_SUCCESS_STATUSES = {"complete", "completed", "done", "succeeded"}
 
 ADAPTER_TIMEOUT_S = 120
 SKILL_SUBPROCESS_TIMEOUT_S = 3600  # the skill polls its own jobs; give it room
@@ -322,6 +327,23 @@ class ReviewExecutor(Executor):
 
             # --- §4.7: confirm terminal status of every job ------------------
             self._confirm_terminal_statuses(state)
+
+            # --- zero-panelist guard -----------------------------------------
+            # If no panelist reached a success status, the aggregator's verdict
+            # (often a hollow PASS-by-default from VERDICT_SUFFIX) is meaningless.
+            # Refuse to PASS; treat as review_error so a human re-runs the gate.
+            panel_ok = [
+                r for r in state.get("per_model", [])
+                if (r.get("status") or "").lower() in PANEL_SUCCESS_STATUSES
+            ]
+            if not panel_ok:
+                state["verdict"] = None
+                state["verdict_reason"] = "zero panelists completed successfully"
+                return await self._finish(
+                    goal, state, GoalStatus.REVIEW_ERROR,
+                    error="review: zero panelists completed successfully "
+                          "(total panel failure) — refusing PASS-by-default",
+                )
 
             verdict, reason = self._parse_verdict(state["aggregated"])
             state["verdict"] = verdict
