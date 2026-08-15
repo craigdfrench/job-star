@@ -82,12 +82,13 @@ class TestParseModelSpec:
         assert legacy is None
 
     def test_model_spec_no_model_param(self):
-        # params present but no "model=" key: bare name falls back to raw id
+        # params present but no "model=" key, and the id does not start with
+        # "model=": the parser treats it as a bare/unknown name (fail-safe,
+        # no crash). prov is None; tier() will conservatively default PREMIUM.
         name, prov, legacy = _parse_model_spec("&prov=ollama")
-        assert prov == "ollama"
-        # name falls back to the raw id (no model= key found)
         assert name == "&prov=ollama"
-        assert legacy == "ollama/&prov=ollama"
+        assert prov is None
+        assert legacy is None
 
     def test_model_spec_empty_provider(self):
         name, prov, legacy = _parse_model_spec("model=glm-5.2&prov=")
