@@ -265,9 +265,22 @@ def _detect_expert(request: IntakeRequest) -> Optional[str]:
     text = request.full_text
     for expert, keywords in EXPERT_KEYWORDS.items():
         for kw in keywords:
-            if kw in text:
+            if _keyword_matches(kw, text):
                 return expert
     return None
+
+
+def _keyword_matches(keyword: str, text: str) -> bool:
+    """Match a keyword against text on word boundaries.
+
+    Plain substring matching (`kw in text`) let the bare keyword "ci" hijack
+    any goal containing a word with "ci" inside it ("exercising", "decide",
+    "special", "practice") -- routing personal/feature goals to the CI expert
+    worker, which stamps template steps instead of AI-planning them. Word
+    boundaries make short keywords match only as whole words.
+    """
+    pattern = r"\b" + re.escape(keyword) + r"\b"
+    return re.search(pattern, text, re.IGNORECASE) is not None
 
 
 # Need GoalStatus for duplicate check
