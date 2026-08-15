@@ -96,7 +96,23 @@ async def execute(
         # retry/fallback never rotates to a model that actually produces
         # output, so the planner dies at `_parse_plan_output` with empty
         # content. Returning success=False lets the retry loop recover.
-        if not content or not content.strip():
+        #
+        # Guard the strip: OpenAI-compatible responses can carry non-string
+        # content (null for tool_calls, or a list of structured parts). Stripping
+        # those would raise AttributeError and fall into the broad except as an
+        # opaque generic failure. job-star's text-generation calls never produce
+        # those shapes, but treat non-string content as an explicit failure
+        # rather than crashing.
+        if not isinstance(content, str):
+            return ExecutionResult(
+                success=False,
+                error=f"non-string content from model: {type(content).__name__}",
+                model=data.get("model", model),
+                input_tokens=usage.get("prompt_tokens", 0),
+                output_tokens=usage.get("completion_tokens", 0),
+                x_gatehouse=x_gatehouse,
+            )
+        if not content.strip():
             return ExecutionResult(
                 success=False,
                 error="empty response from model",
