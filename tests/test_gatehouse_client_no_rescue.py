@@ -87,3 +87,82 @@ async def test_execute_surfaces_upstream_failure_without_rescue(monkeypatch):
     assert not result.success
     assert "503" in (result.error or "")
     assert _header(captured["headers"], "x-gatehouse-no-rescue") == "true"
+
+
+@pytest.mark.asyncio
+async def test_execute_treats_empty_content_200_as_failure(monkeypatch):
+    """A 200 with empty/whitespace content must surface as success=False.
+
+    Some providers return 200 with zero output tokens (notably
+    `model=glm-5.2&prov=cline` returns empty for glm-5.2). Without this guard
+    execute() reports success=True with empty content, the router's
+    retry/fallback never rotates, and the planner dies at `_parse_plan_output`
+    with `output: ""`. Treating empty 200 as failure lets the retry loop recover.
+    """
+    monkeypatch.setenv("GATEHOUSE_API_URL", "http://gateway.example/v1")
+    monkeypatch.setenv("GATEHOUSE_API_KEY", "test-key")
+    captured: dict[str, Any] = {}
+    body = {
+        "choices": [{"finish_reason": "stop", "index": 0,
+                     "message": {"content": ""}}],
+        "model": "model=glm-5.2&prov=cline",
+        "usage": {"prompt_tokens": 5, "completion_tokens": 0},
+    }
+    transport = httpx.MockTransport(_capture_handler(captured, body=body))
+    monkeypatch.setattr(httpx, "AsyncClient", _make_patched_client(transport))
+
+    result = await execute(prompt="hi", model="model=glm-5.2&prov=cline", max_tokens=10)
+
+    assert not result.success
+    assert "empty" in (result.error or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_execute_treats_whitespace_content_200_as_failure(monkeypatch):
+    """A 200 with only-whitespace content must also surface as success=False."""
+    monkeypatch.setenv("GATEHOUSE_API_URL", "http://gateway.example/v1")
+    monkeypatch.setenv("GATEHOUSE_API_KEY", "test-key")
+    captured: dict[str, Any] = {}
+    body = {
+        "choices": [{"finish_reason": "stop", "index": 0,
+                     "message": {"content": "   \n\t  "}}],
+        "model": "model=glm-5.2&prov=cline",
+        "usage": {"prompt_tokens": 5, "completion_tokens": 0},
+    }
+    transport = httpx.MockTransport(_capture_handler(captured, body=body))
+    monkeypatch.setattr(httpx, "AsyncClient", _make_patched_client(transport))
+
+    result = await execute(prompt="hi", model="model=glm-5.2&prov=cline", max_tokens=10)
+
+    assert not result.success
+    assert "empty" in (result.error or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_execute_treats_non_string_content_200_as_failure(monkeypatch):
+    """A 200 with non-string content (null/list/dict) must surface as success=False
+    with a clear error, not raise AttributeError into the broad except.
+
+    OpenAI-compatible responses can carry non-string content (null for
+    tool_calls, or a list of structured parts). The empty-content guard strips
+    content; without an isinstance check that would raise AttributeError and
+    fall into the generic except as an opaque failure. job-star's text calls
+    never produce these shapes, but the client must not crash on them.
+    """
+    monkeypatch.setenv("GATEHOUSE_API_URL", "http://gateway.example/v1")
+    monkeypatch.setenv("GATEHOUSE_API_KEY", "test-key")
+    for bad_content in (None, [{"type": "text", "text": "x"}], {"foo": "bar"}):
+        captured: dict[str, Any] = {}
+        body = {
+            "choices": [{"finish_reason": "stop", "index": 0,
+                         "message": {"content": bad_content}}],
+            "model": "model=glm-5.2&prov=cline",
+            "usage": {"prompt_tokens": 5, "completion_tokens": 0},
+        }
+        transport = httpx.MockTransport(_capture_handler(captured, body=body))
+        monkeypatch.setattr(httpx, "AsyncClient", _make_patched_client(transport))
+
+        result = await execute(prompt="hi", model="model=glm-5.2&prov=cline", max_tokens=10)
+
+        assert not result.success, f"expected failure for content={bad_content!r}, got success"
+        assert "non-string" in (result.error or "").lower(), f"bad error for {bad_content!r}: {result.error!r}"
