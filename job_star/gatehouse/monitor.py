@@ -482,8 +482,8 @@ class GatewayMonitor:
     async def probe_liveness(
         self,
         model_id: str,
-        prompt: str = "ping",
-        max_tokens: int = 16,
+        prompt: str = "Reply with the single word: ready",
+        max_tokens: int = 256,
         timeout: float = 30.0,
     ) -> bool:
         """Actively probe a model with a minimal call and record the result.
@@ -491,6 +491,12 @@ class GatewayMonitor:
         Sends a tiny prompt and classifies the response:
           - success (200 with non-empty string content) -> record_success
           - failure / empty / non-string / HTTP error   -> record_failure
+
+        The default max_tokens (256) is sized for **reasoning models**: a
+        reasoning model can burn ~64-80 tokens on thinking before emitting any
+        visible content, so a too-small budget (e.g. 16) yields an empty 200 --
+        a false-negative that would trip the circuit on a working model. 256
+        covers the free/cheap pool comfortably; the actual output is tiny.
 
         Returns the **probe outcome** (True if the call succeeded with
         content, False if it failed). This is the signal callers want: did the
@@ -516,8 +522,8 @@ class GatewayMonitor:
     async def probe_free_pool(
         self,
         max_models: int | None = None,
-        prompt: str = "ping",
-        max_tokens: int = 16,
+        prompt: str = "Reply with the single word: ready",
+        max_tokens: int = 256,
         probe_ttl: float = 300.0,
         timeout: float = 30.0,
     ) -> dict[str, bool]:
