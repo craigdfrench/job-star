@@ -7,7 +7,6 @@ top-scored model every attempt. The fix always passes model_override=model,
 so the retry actually tries the fallback.
 """
 
-import asyncio
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -89,12 +88,3 @@ async def test_plan_goal_succeeds_first_try_does_not_call_fallback(monkeypatch):
     assert len(steps) >= 1
     gm.record_failure.assert_not_called()
     gm.pick_fallback.assert_not_called()
-
-
-# pytest-asyncio config: these are bare `async def` test functions; run them on the loop.
-def test_uses_fallback(monkeypatch):
-    asyncio.run(test_plan_goal_uses_fallback_model_on_retry(monkeypatch))
-
-
-def test_no_fallback_on_success(monkeypatch):
-    asyncio.run(test_plan_goal_succeeds_first_try_does_not_call_fallback(monkeypatch))
