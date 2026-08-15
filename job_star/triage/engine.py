@@ -214,6 +214,7 @@ def _check_duplicates(
     request: IntakeRequest,
     existing_goals: list[Goal],
     threshold: float = 0.65,
+    explicit_expert: Optional[str] = None,
 ) -> tuple[bool, Optional[str], float]:
     """Check if request duplicates an existing goal.
 
@@ -235,8 +236,8 @@ def _check_duplicates(
         if goal.status == GoalStatus.COMPLETED or goal.status == GoalStatus.ABANDONED:
             continue
         # If the request pins an explicit expert, a goal in a different expert is
-        # a distinct gate/artifact ({goal.expert} vs {request.expert}) — not a dup.
-        if request.expert and goal.expert and goal.expert != request.expert:
+        # a distinct gate/artifact ({goal.expert} vs {explicit_expert}) -- not a dup.
+        if explicit_expert and goal.expert and goal.expert != explicit_expert:
             continue
         # If both have a ref/repo metadata key and they differ by more than
         # expert, they are distinct goals for distinct refs — not a dup.
@@ -337,13 +338,12 @@ async def triage(request: IntakeRequest, check_duplicates: bool = True) -> Triag
     # Detect expert
     # Honor an explicitly-pinned expert (documented on IntakeRequest as
     # "explicit expert routing (overrides triage)" but previously dead --
-    # _detect_expert never consulted request.expert).
+    # _detect_expert never consulted request.expert). For dedup, distinguish
+    # explicit pins from heuristic detections: a *detected* expert must NOT
+    # exclude otherwise-duplicate goals from matching (only a user-pinned one
+    # defines a distinct gate/artifact).
     expert = request.expert or _detect_expert(request)
-    # Propagate into the request before duplicate checking so
-    # _check_duplicates' expert-aware filter (distinct experts => not a dup)
-    # sees the same expert TriageResult will report.
-    if expert and not request.expert:
-        request.expert = expert
+    explicit_expert = request.expert
 
     # Check duplicates
     is_dup = False
@@ -351,7 +351,7 @@ async def triage(request: IntakeRequest, check_duplicates: bool = True) -> Triag
     dup_conf = 0.0
     if check_duplicates:
         existing = await list_goals()
-        is_dup, dup_of, dup_conf = _check_duplicates(request, existing)
+        is_dup, dup_of, dup_conf = _check_duplicates(request, existing, explicit_expert=explicit_expert)
 
     # Overall confidence
     confidence = (domain_conf + urgency_conf + type_conf) / 3.0

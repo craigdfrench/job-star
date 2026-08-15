@@ -134,9 +134,40 @@ def test_prefix_mode_anchored_at_word_start():
 def test_explicit_expert_override_honored():
     """A pinned request.expert wins over keyword detection."""
     req = IntakeRequest(title="Run the CI gate for this PR", expert="review")
-    # detection alone would say ci, but the explicit pin must win in triage();
-    # _detect_expert itself detects ci:
+    # _detect_expert sees the ci keywords:
     assert _detect_expert(req) == "ci"
-    # and the documented override is applied in triage() (covered by the
-    # expert = request.expert or _detect_expert(request) line):
+    # ...but triage() honors the explicit pin first:
     assert (req.expert or _detect_expert(req)) == "review"
+
+
+# ---------------------------------------------------------------------------
+# _check_duplicates: explicit-pin expert exclusion (not heuristic detection)
+# ---------------------------------------------------------------------------
+
+def test_check_duplicates_explicit_expert_excludes_other_expert():
+    """A user-pinned expert makes an other-expert goal NOT a dup.
+
+    e.g. a request pinned to review must not dedupe-match a ci_pass goal.
+    """
+    from job_star.triage.engine import _check_duplicates
+    from job_star.models import Goal, GoalStatus
+    req = IntakeRequest(title="triage the review pipeline")
+    existing = [Goal(id="x", title="triage the review pipeline", status=GoalStatus.ACTIVE, expert="ci")]
+    is_dup, _, _ = _check_duplicates(req, existing, threshold=0.9, explicit_expert="review")
+    assert is_dup is False  # different explicit expert => not a dup
+
+
+def test_check_duplicates_detected_expert_does_not_exclude():
+    """A *detected* (heuristic) expert does NOT get treated as an explicit pin.
+
+    Without this, a request the heuristic guesses as ci-owned would be excluded
+    from matching another ci-owned goal -- but a detected expert is just a guess,
+    so two near-identical requests that both guess ci ARE dups.
+    """
+    from job_star.triage.engine import _check_duplicates
+    from job_star.models import Goal, GoalStatus
+    req = IntakeRequest(title="triage the review pipeline")
+    existing = [Goal(id="x", title="triage the review pipeline", status=GoalStatus.ACTIVE, expert="ci")]
+    # No explicit pin => no expert-based exclusion => they match (dup).
+    is_dup, _, _ = _check_duplicates(req, existing, threshold=0.9, explicit_expert=None)
+    assert is_dup is True
