@@ -59,6 +59,15 @@ async def execute(
                 headers={
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {api_key}",
+                    # Bypass the gateway's rescue layer. job-star needs the
+                    # real upstream result (a transient 404/503 stays a failure)
+                    # so the router's retry/fallback recovers from transient
+                    # provider outages (e.g. nvidia 404s that come and go).
+                    # Without this the rescue layer returns 200 + a
+                    # session-continuity message, which execute() treats as
+                    # success -- poisoning planning/execution with rescue
+                    # garbage and defeating the retry loop. (#104 opt-out.)
+                    "X-Gatehouse-No-Rescue": "true",
                 },
                 json={
                     "model": model,
