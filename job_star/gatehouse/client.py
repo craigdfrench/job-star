@@ -7,16 +7,17 @@ This is the execution layer. It talks to the gatehouse-ai HTTP API
 from __future__ import annotations
 
 import os
-from typing import Optional
 
 from ..models import ExecutionResult
 
 
 def _get_config() -> tuple[str, str, str]:
     """Get gateway URL, API key, and default model from environment."""
-    base_url = os.environ.get("GATEHOUSE_API_URL", "http://100.64.158.87:8090/v1")
-    api_key = os.environ.get("GATEHOUSE_API_KEY", "no-key-needed")
-    default_model = os.environ.get("JOB_STAR_MODEL", "ollama/glm-5.2")
+    # `or default` (not os.environ.get(k, default)) so an explicitly-empty env
+    # var falls back to the default instead of silently overriding it.
+    base_url = os.environ.get("GATEHOUSE_API_URL") or "http://100.64.158.87:8090/v1"
+    api_key = os.environ.get("GATEHOUSE_API_KEY") or "no-key-needed"
+    default_model = os.environ.get("JOB_STAR_MODEL") or "ollama/glm-5.2"
     return base_url, api_key, default_model
 
 
@@ -45,7 +46,7 @@ def _health_url(base_url: str) -> str:
 
 async def execute(
     prompt: str,
-    model: str,
+    model: str | None = None,
     system_prompt: str | None = None,
     max_tokens: int = 4096,
     temperature: float = 0.7,
@@ -128,6 +129,13 @@ async def execute(
                 model=model,
             )
 
+        if not isinstance(data, dict):
+            return ExecutionResult(
+                success=False,
+                error=f"non-object 200 response body: {type(data).__name__}",
+                model=model,
+            )
+
         # Guard the choices indexing: a spec-legal 200 can carry an empty
         # choices list (error/filter conditions), which previously raised
         # IndexError into the broad except as an opaque failure.
@@ -138,10 +146,28 @@ async def execute(
                 error="empty or malformed choices array in 200 response",
                 model=model,
             )
-        message = choices[0].get("message") or {}
+        message = choices[0].get("message")
+        if not isinstance(message, dict):
+            message = {}
         content = message.get("content", "")
-        usage = data.get("usage", {})
-        x_gatehouse = usage.get("x_gatehouse", {}) or {}
+        # `usage`/`x_gatehouse` can be explicitly null in valid JSON -- the
+        # `.get(k, {})` default only fires when the key is absent, so a null
+        # value previously raised AttributeError into the broad except.
+        usage = data.get("usage")
+        if not isinstance(usage, dict):
+            usage = {}
+        x_gatehouse = usage.get("x_gatehouse")
+        if not isinstance(x_gatehouse, dict):
+            x_gatehouse = {}
+
+        def _tok(key: str) -> int:
+            try:
+                return int(usage.get(key) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        input_tokens = _tok("prompt_tokens")
+        output_tokens = _tok("completion_tokens")
 
         # Treat an empty/whitespace 200 as a failure. Some providers return
         # 200 with zero output tokens (notably `model=glm-5.2&prov=cline`
@@ -162,8 +188,8 @@ async def execute(
                 success=False,
                 error=f"non-string content from model: {type(content).__name__}",
                 model=data.get("model", model),
-                input_tokens=usage.get("prompt_tokens", 0),
-                output_tokens=usage.get("completion_tokens", 0),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
                 x_gatehouse=x_gatehouse,
             )
         if not content.strip():
@@ -171,16 +197,16 @@ async def execute(
                 success=False,
                 error="empty response from model",
                 model=data.get("model", model),
-                input_tokens=usage.get("prompt_tokens", 0),
-                output_tokens=usage.get("completion_tokens", 0),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
                 x_gatehouse=x_gatehouse,
             )
 
         return ExecutionResult(
             content=content,
             model=data.get("model", model),
-            input_tokens=usage.get("prompt_tokens", 0),
-            output_tokens=usage.get("completion_tokens", 0),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             success=True,
             x_gatehouse=x_gatehouse,
         )
@@ -200,7 +226,7 @@ async def check_health() -> bool:
     base_url, _, _ = _get_config()
     health_url = _health_url(base_url)
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5, connect=5)) as client:
             resp = await client.get(health_url)
             return resp.status_code == 200
     except Exception:

@@ -206,3 +206,119 @@ async def test_execute_connect_timeout_capped(monkeypatch):
     assert isinstance(t, httpx.Timeout), f"expected httpx.Timeout, got {type(t)}"
     assert t.connect == 15.0
     assert t.read == 300.0
+
+
+# ---------------------------------------------------------------------------
+# Malformed-but-valid-JSON 200 hardening (usage: null, non-dict root/message,
+# null token fields) -- the adjudicator's most_important_fix follow-up.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_execute_null_usage_200_no_crash(monkeypatch):
+    """A 200 with explicit "usage": null must not raise AttributeError.
+
+    data.get("usage", {}) only substitutes the default when the key is ABSENT;
+    an explicit null previously passed through and usage.get(...) raised into
+    the broad except as an opaque failure.
+    """
+    monkeypatch.setenv("GATEHOUSE_API_URL", "http://gateway.example/v1")
+    monkeypatch.setenv("GATEHOUSE_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "choices": [{"finish_reason": "stop", "index": 0,
+                         "message": {"content": "ok"}}],
+            "model": "model=glm-5.2&prov=ollama",
+            "usage": None,
+        })
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(httpx, "AsyncClient", _make_patched_client(transport))
+
+    result = await execute(prompt="hi", model="model=glm-5.2&prov=ollama", max_tokens=10)
+
+    assert result.success
+    assert result.input_tokens == 0
+    assert result.output_tokens == 0
+    assert result.x_gatehouse == {}
+
+
+@pytest.mark.asyncio
+async def test_execute_non_dict_root_200_is_clear_failure(monkeypatch):
+    """A 200 whose JSON root is not an object (e.g. a list) fails clearly."""
+    monkeypatch.setenv("GATEHOUSE_API_URL", "http://gateway.example/v1")
+    monkeypatch.setenv("GATEHOUSE_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=["not", "an", "object"])
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(httpx, "AsyncClient", _make_patched_client(transport))
+
+    result = await execute(prompt="hi", model="model=glm-5.2&prov=ollama", max_tokens=10)
+
+    assert not result.success
+    assert "non-object" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_execute_non_dict_message_200_is_empty_failure(monkeypatch):
+    """A 200 with a non-dict message yields empty content -> empty-response
+    failure (not an AttributeError into the broad except)."""
+    monkeypatch.setenv("GATEHOUSE_API_URL", "http://gateway.example/v1")
+    monkeypatch.setenv("GATEHOUSE_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "choices": [{"finish_reason": "stop", "index": 0,
+                         "message": "not-a-dict"}],
+            "model": "model=glm-5.2&prov=ollama",
+            "usage": {},
+        })
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(httpx, "AsyncClient", _make_patched_client(transport))
+
+    result = await execute(prompt="hi", model="model=glm-5.2&prov=ollama", max_tokens=10)
+
+    assert not result.success
+    assert "empty" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_execute_null_token_fields_coerce_to_zero(monkeypatch):
+    """Explicitly-null prompt/completion tokens coerce to 0, not None."""
+    monkeypatch.setenv("GATEHOUSE_API_URL", "http://gateway.example/v1")
+    monkeypatch.setenv("GATEHOUSE_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "choices": [{"finish_reason": "stop", "index": 0,
+                         "message": {"content": "ok"}}],
+            "model": "model=glm-5.2&prov=ollama",
+            "usage": {"prompt_tokens": None, "completion_tokens": None},
+        })
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(httpx, "AsyncClient", _make_patched_client(transport))
+
+    result = await execute(prompt="hi", model="model=glm-5.2&prov=ollama", max_tokens=10)
+
+    assert result.success
+    assert result.input_tokens == 0
+    assert result.output_tokens == 0
+
+
+def test_get_config_empty_string_env_falls_back_to_default(monkeypatch):
+    """An explicitly-empty env var falls back to the default (not "").
+
+    os.environ.get(k, default) only substitutes when the var is UNSET; an
+    empty-string override previously won through as "".
+    """
+    from job_star.gatehouse.client import _get_config
+    monkeypatch.setenv("GATEHOUSE_API_URL", "")
+    monkeypatch.setenv("JOB_STAR_MODEL", "")
+    base_url, _, default_model = _get_config()
+    assert base_url, "empty env must fall back to the default URL"
+    assert default_model, "empty env must fall back to the default model"
+    assert base_url == "http://100.64.158.87:8090/v1"
