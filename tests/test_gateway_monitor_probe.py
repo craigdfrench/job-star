@@ -156,45 +156,45 @@ async def test_probe_free_pool_probes_circuit_open_models_for_recovery(monkeypat
     (finding #7/#16).
     """
     mon = GatewayMonitor(failure_threshold=3)
-    _seed_catalog(mon, ["model=a&prov=free", "model=b&prov=nvidia"])
+    _seed_catalog(mon, ["model=a&prov=free", "model=deepseek-v4&prov=nvidia"])
     # Trip model=b's circuit (3 failures), no quota hold
-    s = mon.state("model=b&prov=nvidia")
+    s = mon.state("model=deepseek-v4&prov=nvidia")
     for _ in range(3):
         s.record_failure("HTTP 404")
     assert not s.is_in_quota_hold  # circuit-open, not quota hold
-    assert not mon.is_available("model=b&prov=nvidia")
+    assert not mon.is_available("model=deepseek-v4&prov=nvidia")
 
     # Probe where model=b recovers (returns success)
     fake = _FakeExecute({
         "model=a&prov=free": _result(success=True, content="ok"),
-        "model=b&prov=nvidia": _result(success=True, content="ok"),
+        "model=deepseek-v4&prov=nvidia": _result(success=True, content="ok"),
     })
     monkeypatch.setattr(monitor, "_execute_ai", fake)
 
     results = await mon.probe_free_pool(reprobe_ttl=0.0)  # ignore throttle for the test
 
-    assert "model=b&prov=nvidia" in results  # circuit-open model WAS probed
-    assert results["model=b&prov=nvidia"] is True
+    assert "model=deepseek-v4&prov=nvidia" in results  # circuit-open model WAS probed
+    assert results["model=deepseek-v4&prov=nvidia"] is True
     # record_success reset the circuit -> available again
-    assert mon.is_available("model=b&prov=nvidia") is True
-    assert mon.state("model=b&prov=nvidia").consecutive_failures == 0
+    assert mon.is_available("model=deepseek-v4&prov=nvidia") is True
+    assert mon.state("model=deepseek-v4&prov=nvidia").consecutive_failures == 0
 
 
 @pytest.mark.asyncio
 async def test_probe_free_pool_circuit_open_uses_longer_reprobe_ttl(monkeypatch):
     """Circuit-open models are throttled by reprobe_ttl (longer than probe_ttl)."""
     mon = GatewayMonitor(failure_threshold=3)
-    _seed_catalog(mon, ["model=a&prov=free", "model=b&prov=nvidia"])
+    _seed_catalog(mon, ["model=a&prov=free", "model=deepseek-v4&prov=nvidia"])
     # Trip model=b's circuit
     for _ in range(3):
-        mon.state("model=b&prov=nvidia").record_failure("HTTP 404")
+        mon.state("model=deepseek-v4&prov=nvidia").record_failure("HTTP 404")
     # Mark both as probed just now (within probe_ttl but outside a tiny reprobe_ttl)
     now = time.time()
     mon.state("model=a&prov=free").last_probe = now
-    mon.state("model=b&prov=nvidia").last_probe = now
+    mon.state("model=deepseek-v4&prov=nvidia").last_probe = now
     fake = _FakeExecute({
         "model=a&prov=free": _result(success=True, content="ok"),
-        "model=b&prov=nvidia": _result(success=True, content="ok"),
+        "model=deepseek-v4&prov=nvidia": _result(success=True, content="ok"),
     })
     monkeypatch.setattr(monitor, "_execute_ai", fake)
 
@@ -203,7 +203,7 @@ async def test_probe_free_pool_circuit_open_uses_longer_reprobe_ttl(monkeypatch)
     results = await mon.probe_free_pool(probe_ttl=300.0, reprobe_ttl=0.0)
 
     assert "model=a&prov=free" not in results  # throttled by probe_ttl
-    assert "model=b&prov=nvidia" in results     # circuit-open, reprobe_ttl=0 -> probed
+    assert "model=deepseek-v4&prov=nvidia" in results     # circuit-open, reprobe_ttl=0 -> probed
 
 
 @pytest.mark.asyncio
