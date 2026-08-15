@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import job_star.orchestrator as orch_mod
-from job_star.models import Goal, ExecutionResult, RoutingDecision
+from job_star.models import Goal, Step, ExecutionResult, RoutingDecision
 
 
 def _make_goal() -> Goal:
@@ -39,18 +39,30 @@ async def _execute_fail_A_then_pass_B(prompt, model, system_prompt=None, **kw):
 
 def _make_orch(gm):
     """Build an Orchestrator instance bypassing __init__ (which wires up
-    loop-scheduling components like Supervisor/FollowUpEngine that are not
-    used by plan_goal and conflict with the per-test pytest-asyncio loop)."""
+    loop-scheduling components not used by plan_goal)."""
     o = object.__new__(orch_mod.Orchestrator)
     o.gateway_monitor = gm
     return o
+
+
+def _stub_db(monkeypatch):
+    """Mock the DB/parsing helpers plan_goal touches after the AI call."""
+    monkeypatch.setattr(orch_mod, "audit", AsyncMock(return_value=None))
+    monkeypatch.setattr(orch_mod, "create_step",
+                        AsyncMock(side_effect=lambda goal_id, title, description=None,
+                                  order_index=None, depends_on=None:
+                                  Step(goal_id=goal_id, title=title,
+                                       description=description, order_index=order_index or 0)))
+    monkeypatch.setattr(orch_mod, "record_decision", AsyncMock(return_value=None))
+    monkeypatch.setattr(orch_mod, "_parse_plan_output",
+                        lambda content: [("Step One", "desc one"), ("Step Two", "desc two")])
 
 
 async def test_plan_goal_uses_fallback_model_on_retry(monkeypatch):
     """On a top-model failure, the retry must call the fallback model (not re-pick A)."""
     monkeypatch.setattr(orch_mod, "get_goal", AsyncMock(return_value=_make_goal()))
     monkeypatch.setattr(orch_mod, "get_steps", AsyncMock(return_value=[]))  # no existing steps
-    monkeypatch.setattr(orch_mod, "audit", AsyncMock(return_value=None))
+    _stub_db(monkeypatch)
     monkeypatch.setattr(orch_mod, "route", _route_top_then_override)
 
     execute_calls: list[str] = []
@@ -70,7 +82,7 @@ async def test_plan_goal_uses_fallback_model_on_retry(monkeypatch):
 
     # The fallback B must actually have been called (attempt 0 = A fails, attempt 1 = B succeeds).
     assert execute_calls == ["A", "B"], f"expected A then B, got {execute_calls!r}"
-    assert len(steps) >= 1
+    assert len(steps) == 2
     gm.record_failure.assert_called()       # A's failure recorded
     gm.pick_fallback.assert_called()         # B picked as the fallback
 
@@ -79,7 +91,7 @@ async def test_plan_goal_succeeds_first_try_does_not_call_fallback(monkeypatch):
     """When the top model succeeds immediately, no fallback is consulted."""
     monkeypatch.setattr(orch_mod, "get_goal", AsyncMock(return_value=_make_goal()))
     monkeypatch.setattr(orch_mod, "get_steps", AsyncMock(return_value=[]))
-    monkeypatch.setattr(orch_mod, "audit", AsyncMock(return_value=None))
+    _stub_db(monkeypatch)
     monkeypatch.setattr(orch_mod, "route", _route_top_then_override)
     monkeypatch.setattr(orch_mod, "execute_ai",
                         AsyncMock(return_value=ExecutionResult(
@@ -93,6 +105,6 @@ async def test_plan_goal_succeeds_first_try_does_not_call_fallback(monkeypatch):
     o = _make_orch(gm)
     steps = await o.plan_goal("g-1708")
 
-    assert len(steps) >= 1
+    assert len(steps) == 2
     gm.record_failure.assert_not_called()
     gm.pick_fallback.assert_not_called()
