@@ -89,6 +89,23 @@ async def execute(
         usage = data.get("usage", {})
         x_gatehouse = usage.get("x_gatehouse", {}) or {}
 
+        # Treat an empty/whitespace 200 as a failure. Some providers return
+        # 200 with zero output tokens (notably `model=glm-5.2&prov=cline`
+        # returns empty for glm-5.2) -- a false-advertised / confounded-upstream
+        # variant. Without this, execute() reports success and the router's
+        # retry/fallback never rotates to a model that actually produces
+        # output, so the planner dies at `_parse_plan_output` with empty
+        # content. Returning success=False lets the retry loop recover.
+        if not content or not content.strip():
+            return ExecutionResult(
+                success=False,
+                error="empty response from model",
+                model=data.get("model", model),
+                input_tokens=usage.get("prompt_tokens", 0),
+                output_tokens=usage.get("completion_tokens", 0),
+                x_gatehouse=x_gatehouse,
+            )
+
         return ExecutionResult(
             content=content,
             model=data.get("model", model),
