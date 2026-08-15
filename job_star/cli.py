@@ -792,6 +792,48 @@ async def cmd_monitor(positional: list[str], flags: dict[str, str]) -> None:
     print(format_report(report))
 
 
+async def cmd_probe(positional: list[str], flags: dict[str, str]) -> None:
+    """Liveness-probe the free/cheap model pool (Vikunja #1709).
+
+    Sends a minimal call to each free/cheap-tier catalog model and records
+    success/failure so false-advertised models (nvidia 404, cline empty
+    content) trip the circuit on the probe instead of on a real goal. Designed
+    to run via a systemd timer (out-of-band, like the watchdog skills).
+
+    Usage:
+      job_star probe                 Probe the whole free/cheap pool
+      job_star probe --model X       Probe a single model id
+      job_star probe --max-models 5   Cap the number of probes
+      job_star probe --ttl 600        Throttle window (seconds)
+    """
+    from .gatehouse.monitor import GatewayMonitor
+    mon = GatewayMonitor()
+    ttl = float(flags.get("ttl", "300")) if flags.get("ttl") else 300.0
+    if flags.get("model"):
+        model = flags["model"]
+        available = await mon.probe_liveness(model)
+        s = mon.state(model)
+        status = "alive" if available else "dead"
+        print(f"  probe  {model}  ->  {status}  (failures={s.consecutive_failures}, last_error={s.last_error!r})")
+        await close_pool()
+        return
+
+    max_models = int(flags["max-models"]) if flags.get("max-models") else None
+    results = await mon.probe_free_pool(max_models=max_models, probe_ttl=ttl)
+    if not results:
+        print("  no models probed (pool empty, all unavailable, or all throttled)")
+    else:
+        alive = sum(1 for v in results.values() if v)
+        dead = len(results) - alive
+        print(f"  probed {len(results)} free/cheap models: {alive} alive, {dead} dead")
+        for mid, available in results.items():
+            s = mon.state(mid)
+            status = "alive" if available else "dead"
+            err = f"  err={s.last_error!r}" if s.last_error else ""
+            print(f"    {status:5}  {mid}{err}")
+    await close_pool()
+
+
 
 # ============================================================================
 # DASHBOARD + REVIEW commands (simplified UX)
@@ -828,6 +870,7 @@ COMMANDS = {
     "commentary": cmd_commentary,
     "review": cmd_review,
     "monitor": cmd_monitor,
+    "probe": cmd_probe,
     "home": cmd_home,
 }
 
@@ -861,6 +904,7 @@ def _help_text() -> str:
     status                  System health + model tiers
     digest [N]              Recent activity log
     monitor [--check]       System integrity check + self-healing
+    probe [--model X]       Liveness-probe the free/cheap model pool (#1709)
     upgrade [--check]       Safe deploy (blue-green)
     panel                   Live terminal dashboard
     worker                  Run a worker process
