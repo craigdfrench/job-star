@@ -492,9 +492,13 @@ class GatewayMonitor:
           - success (200 with non-empty string content) -> record_success
           - failure / empty / non-string / HTTP error   -> record_failure
 
-        Returns True if the model is still available after the probe (i.e. the
-        probe did not trip the circuit / quota hold), False otherwise. Records
-        last_probe for throttle use by probe_free_pool.
+        Returns the **probe outcome** (True if the call succeeded with
+        content, False if it failed). This is the signal callers want: did the
+        model actually respond? Post-probe *availability* (whether the circuit
+        / quota hold has tripped after recording) is a separate question answered
+        by is_available(); a single failed probe returns False here while the
+        model may still be is_available (the circuit opens after
+        failure_threshold consecutive failures).
         """
         result = await _execute_ai(
             prompt=prompt, model=model_id, max_tokens=max_tokens, timeout=timeout,
@@ -507,7 +511,7 @@ class GatewayMonitor:
         else:
             self.record_failure(model_id, result.error or "liveness probe failed")
         s.last_probe = time.time()
-        return self.is_available(model_id)
+        return result.success
 
     async def probe_free_pool(
         self,
@@ -527,7 +531,8 @@ class GatewayMonitor:
 
         Records success/failure so the circuit breaker + quota holds exclude
         false-advertised models from the routable set. Returns a mapping of
-        probed model_id -> available-after-probe.
+        probed model_id -> probe-outcome (True = responded with content,
+        False = failed/empty/errored).
         """
         await self.refresh()
         results: dict[str, bool] = {}

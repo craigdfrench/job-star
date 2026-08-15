@@ -65,6 +65,7 @@ async def test_probe_liveness_records_success(monkeypatch):
     assert mon.state("model=a&prov=free").consecutive_failures == 0
     assert mon.state("model=a&prov=free").total_requests == 1
     assert mon.state("model=a&prov=free").last_probe is not None
+    assert available is True  # probe succeeded
 
 
 @pytest.mark.asyncio
@@ -80,10 +81,14 @@ async def test_probe_liveness_records_failure_on_empty(monkeypatch):
 
     available = await mon.probe_liveness("model=glm-5.2&prov=cline")
 
-    assert available is True  # one failure < threshold (3), still available
+    # Probe outcome is False (the call failed), even though the model is still
+    # is_available (one failure < threshold). The CLI/caller distinguishes
+    # probe-outcome from post-probe availability.
+    assert available is False
     s = mon.state("model=glm-5.2&prov=cline")
     assert s.consecutive_failures == 1
     assert s.last_error == "empty response from model"
+    assert mon.is_available("model=glm-5.2&prov=cline") is True
 
 
 @pytest.mark.asyncio
