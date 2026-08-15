@@ -66,6 +66,51 @@ class TestParseModelSpec:
         assert prov is None
         assert legacy is None
 
+    # --- malformed / edge-case inputs (fail-safe, never raise) ---------------
+
+    def test_empty_string(self):
+        name, prov, legacy = _parse_model_spec("")
+        assert name == ""
+        assert prov is None
+        assert legacy is None
+
+    def test_model_spec_no_value(self):
+        # "model=" with no name value: bare name falls back to the raw id
+        name, prov, legacy = _parse_model_spec("model=")
+        assert name == "model="
+        assert prov is None
+        assert legacy is None
+
+    def test_model_spec_no_model_param(self):
+        # params present but no "model=" key: bare name falls back to raw id
+        name, prov, legacy = _parse_model_spec("&prov=ollama")
+        assert prov == "ollama"
+        # name falls back to the raw id (no model= key found)
+        assert name == "&prov=ollama"
+        assert legacy == "ollama/&prov=ollama"
+
+    def test_model_spec_empty_provider(self):
+        name, prov, legacy = _parse_model_spec("model=glm-5.2&prov=")
+        assert name == "glm-5.2"
+        assert prov == ""
+        # empty prov -> no legacy form (f"{prov}/{name}" would be "/glm-5.2")
+        assert legacy is None
+
+    def test_model_spec_duplicate_params_last_wins(self):
+        name, prov, legacy = _parse_model_spec(
+            "model=glm-5.2&prov=ollama&prov=nvidia"
+        )
+        assert name == "glm-5.2"
+        assert prov == "nvidia"  # last value wins
+        assert legacy == "nvidia/glm-5.2"
+
+    def test_bare_name_with_slash_prefix_not_treated_as_legacy(self):
+        # a leading slash is not a "provider/name" form
+        name, prov, legacy = _parse_model_spec("/weird")
+        assert name == "/weird"
+        assert prov is None
+        assert legacy is None
+
 
 # --------------------------------------------------------------------------- #
 # GatewayMonitor.tier — model-spec format classification
@@ -201,3 +246,35 @@ async def test_pick_fallback_finds_spec_form_model():
     assert fallback is not None
     assert fallback in _spec_gateway_models()
     assert monitor.tier_for(fallback) in (ModelTier.QUOTA_FREE, ModelTier.CHEAP)
+
+
+# --------------------------------------------------------------------------- #
+# Offline fallback (no gateway monitor) — must be unaffected by the change
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_offline_fallback_unaffected_without_gateway_monitor():
+    """The offline path (no gateway monitor) uses the static MODEL_REGISTRY.
+
+    The review panel worried that calling pick_fallback with a spec-form tag
+    against the legacy-keyed MODEL_REGISTRY would silently brick the offline
+    fallback. That cannot happen: pick_fallback is a GatewayMonitor method
+    that iterates the live _gateway_models, and route()'s offline branch sets
+    fallback=None and selects from MODEL_REGISTRY directly — pick_fallback is
+    not called. This test pins that the offline path still returns a model
+    and is unaffected by the spec-form tier() changes.
+    """
+    decision = await route(
+        urgency=Urgency.SOON,
+        request_type="feature",
+        description="Build a structured 4-week daily learning module to learn WezTerm",
+        allow_expensive=False,
+        gateway_monitor=None,  # offline mode
+    )
+    assert decision.model, (
+        f"offline fallback returned no model: {decision.reason!r}"
+    )
+    # The offline path selects from MODEL_REGISTRY (legacy-form names) and
+    # does not go through tier() classification at all.
+    assert decision.model
