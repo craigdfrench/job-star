@@ -9,6 +9,8 @@ spec-form ID falls through to the PREMIUM default, bricking routing for
 non-expert goals (0 free/cheap candidates).
 """
 
+import time
+
 import pytest
 
 from job_star.gatehouse.monitor import (
@@ -79,8 +81,9 @@ class TestTierModelSpecFormat:
         ("model=glm-5.1&prov=ollama", ModelTier.QUOTA_FREE),
         # QUOTA_FREE via the legacy-form TIER_OVERRIDES key "ollama/glm-5.2"
         ("model=glm-5.2&prov=nvidia", ModelTier.QUOTA_FREE),
-        # CHEAP via the deepseek prefix heuristic
-        ("model=deepseek-v4-flash&prov=ollama", ModelTier.CHEAP),
+        # QUOTA_FREE via the legacy-form TIER_OVERRIDES key "ollama/deepseek-v4-flash"
+        ("model=deepseek-v4-flash&prov=ollama", ModelTier.QUOTA_FREE),
+        # CHEAP via the deepseek prefix heuristic (no matching override)
         ("model=deepseek-v4-pro&prov=together", ModelTier.CHEAP),
         # CHEAP via the gemini-3-5-flash prefix heuristic
         ("model=gemini-3-5-flash-minimal&prov=google", ModelTier.CHEAP),
@@ -145,6 +148,7 @@ async def test_build_live_candidates_finds_free_models_in_spec_form():
     """Before the fix, all spec-form models defaulted to PREMIUM -> 0 candidates."""
     monitor = GatewayMonitor()
     monitor._gateway_models = _spec_gateway_models()
+    monitor._last_refresh = time.time()  # serve the cache; do not re-fetch
     candidates = await _build_live_candidates(
         monitor, requires_vision=False, prefer_free=False, allow_expensive=False
     )
@@ -166,6 +170,7 @@ async def test_route_returns_free_model_for_non_expert_goal():
     """
     monitor = GatewayMonitor()
     monitor._gateway_models = _spec_gateway_models()
+    monitor._last_refresh = time.time()  # serve the cache; do not re-fetch
     decision = await route(
         urgency=Urgency.SOON,
         request_type="feature",
