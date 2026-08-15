@@ -119,11 +119,18 @@ Break this goal into concrete steps."""
         tried: set[str] = set()
         result = None
         for attempt in range(3):
+            # Always pass model_override=model: on attempt 0 `model` is the
+            # caller's override (None -> route picks the top-scored model); on
+            # retry attempts `model` is the fallback chosen below, so route
+            # uses it instead of re-picking the same just-failed top model.
+            # (Previously `model if attempt == 0 else None` made the fallback
+            # assignment dead code: route() re-routed with no override and
+            # re-picked the same failing model on every attempt.)
             routing = await route(
                 urgency=goal.urgency,
                 request_type="feature",
                 description=goal.description or goal.title,
-                model_override=model if attempt == 0 else None,
+                model_override=model,
                 allow_expensive=allow_expensive,
                 gateway_monitor=self.gateway_monitor,
             )
