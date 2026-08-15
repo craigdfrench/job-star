@@ -298,7 +298,7 @@ async def route(
             gateway_monitor, requires_vision, prefer_free, allow_expensive
         )
         fallback = gateway_monitor.pick_fallback(
-            "ollama/glm-5.2",
+            "model=glm-5.2&prov=ollama",
             required_capability="vision" if requires_vision else None,
             prefer_free=prefer_free,
             allow_expensive=allow_expensive,

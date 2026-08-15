@@ -214,6 +214,44 @@ class ModelState:
         self.last_error = None
 
 
+def _parse_model_spec(model_id: str) -> tuple[str, Optional[str], Optional[str]]:
+    """Normalize a model ID into (bare_name, provider, legacy_form).
+
+    The gatehouse gateway advertises models in the model-spec certificate
+    format ``model=NAME&prov=PROVIDER`` (e.g. ``model=glm-5.2&prov=ollama``).
+    The tier classifier's ``TIER_OVERRIDES`` keys and family prefix
+    heuristics were written for the bare name (``glm-5.2``) and the legacy
+    ``provider/name`` form (``ollama/glm-5.2``). Without normalization every
+    spec-form ID starts with ``model=``, matches none of the
+    ``startswith(...)`` heuristics, and falls through to the conservative
+    PREMIUM default — which silently bricks routing for every non-expert
+    goal (0 free/cheap candidates).
+
+    Returns ``(bare_name, provider, legacy_form)`` where ``legacy_form`` is
+    ``f"{prov}/{name}"`` when a provider is present, else ``None``. For a
+    non-spec, non-``prov/name`` ID, ``bare_name == model_id`` and the other
+    two are ``None``.
+    """
+    # Model-spec certificate format: "model=NAME&prov=PROVIDER[&...]"
+    if model_id.startswith("model="):
+        params: dict[str, str] = {}
+        for part in model_id.split("&"):
+            if "=" in part:
+                k, v = part.split("=", 1)
+                params[k] = v
+        name = params.get("model") or model_id
+        prov = params.get("prov")
+        legacy = f"{prov}/{name}" if prov else None
+        return name, prov, legacy
+    # Legacy "provider/name" form (e.g. "ollama/glm-5.2").
+    if "/" in model_id and not model_id.startswith("/"):
+        prov, _, name = model_id.partition("/")
+        if prov and name:
+            return name, prov, model_id
+    # Bare name (e.g. "glm-5.2", "kimi-k2-7").
+    return model_id, None, None
+
+
 class GatewayMonitor:
     """Monitor gatehouse model availability, quota state, and cost tiers.
 
@@ -241,30 +279,44 @@ class GatewayMonitor:
         instance method tier_for), then gatehouse config `free_kind`, then
         the hardcoded `TIER_OVERRIDES` map, then family prefix heuristics.
         """
-        # Authoritative source: gatehouse config
-        kind = _get_cost_kind_from_config(model_id)
-        if kind == CostKind.INCLUDED_UNLIMITED:
-            return ModelTier.FREE
-        if kind == CostKind.PROMOTIONAL_FREE:
-            return ModelTier.FREE
-        if kind == CostKind.QUOTA_BEARING:
-            return ModelTier.PREMIUM
+        # Normalize the model-spec certificate format ("model=NAME&prov=PROVIDER")
+        # and the legacy "provider/name" form so the config lookup, exact
+        # overrides, and family prefix heuristics below match against the bare
+        # name and the legacy form as well as the raw ID. Without this, every
+        # spec-form ID starts with "model=", matches no heuristic, and defaults
+        # to PREMIUM — bricking routing for non-expert goals.
+        name, _prov, legacy = _parse_model_spec(model_id)
+        forms = [mid for mid in (model_id, name, legacy) if mid is not None]
 
-        # Exact override
-        if model_id in TIER_OVERRIDES:
-            return TIER_OVERRIDES[model_id]
+        # Authoritative source: gatehouse config (first non-UNKNOWN kind wins)
+        for mid in forms:
+            kind = _get_cost_kind_from_config(mid)
+            if kind == CostKind.INCLUDED_UNLIMITED:
+                return ModelTier.FREE
+            if kind == CostKind.PROMOTIONAL_FREE:
+                return ModelTier.FREE
+            if kind == CostKind.QUOTA_BEARING:
+                return ModelTier.PREMIUM
 
-        # Family prefix match
-        if model_id.startswith("ollama/"):
-            return ModelTier.QUOTA_FREE
-        if model_id.startswith("claude-opus") or model_id.startswith("claude-5-fable"):
-            return ModelTier.PREMIUM
-        if model_id.startswith("claude-sonnet-"):
-            return ModelTier.STANDARD
-        if model_id.startswith("glm-5"):
-            return ModelTier.QUOTA_FREE
-        if model_id.startswith("gemini-3-5-flash") or model_id.startswith("deepseek"):
-            return ModelTier.CHEAP
+        # Exact override (try the raw ID, bare name, and legacy form)
+        for mid in forms:
+            if mid in TIER_OVERRIDES:
+                return TIER_OVERRIDES[mid]
+
+        # Family prefix match — check the bare name and legacy form
+        for mid in (name, legacy):
+            if mid is None:
+                continue
+            if mid.startswith("ollama/"):
+                return ModelTier.QUOTA_FREE
+            if mid.startswith("claude-opus") or mid.startswith("claude-5-fable"):
+                return ModelTier.PREMIUM
+            if mid.startswith("claude-sonnet-"):
+                return ModelTier.STANDARD
+            if mid.startswith("glm-5"):
+                return ModelTier.QUOTA_FREE
+            if mid.startswith("gemini-3-5-flash") or mid.startswith("deepseek"):
+                return ModelTier.CHEAP
         # Unknown model: conservative default
         return ModelTier.PREMIUM
 
