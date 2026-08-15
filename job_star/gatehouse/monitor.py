@@ -341,7 +341,10 @@ class GatewayMonitor:
         if allow_expensive:
             return True
         tier = self.tier_for(model_id)
-        return tier in (ModelTier.QUOTA_FREE, ModelTier.CHEAP)
+        # FREE (truly free, no quota) is the best fallback -- include it even
+        # without allow_expensive. Previously FREE was excluded, leaving truly
+        # free models unroutable as fallbacks.
+        return tier in (ModelTier.FREE, ModelTier.QUOTA_FREE, ModelTier.CHEAP)
 
     def cost_kind(self, model_id: str) -> CostKind:
         """Return the gatehouse cost kind for a model."""
@@ -506,17 +509,22 @@ class GatewayMonitor:
         model may still be is_available (the circuit opens after
         failure_threshold consecutive failures).
         """
+        s = self.state(model_id)
+        # Reserve the probe slot BEFORE the await so a concurrent
+        # probe_free_pool caller's throttle check skips this model (avoids
+        # duplicate billable probes under overlapping invocations -- finding
+        # #6/#20). _execute_ai never raises (returns ExecutionResult on
+        # failure), so last_probe is always set even on a failed probe.
+        s.last_probe = time.time()
         result = await _execute_ai(
             prompt=prompt, model=model_id, max_tokens=max_tokens, timeout=timeout,
         )
-        s = self.state(model_id)
         if result.success:
             self.record_success(
                 model_id, tokens=result.output_tokens, x_gatehouse=result.x_gatehouse,
             )
         else:
             self.record_failure(model_id, result.error or "liveness probe failed")
-        s.last_probe = time.time()
         return result.success
 
     async def probe_free_pool(
@@ -525,31 +533,47 @@ class GatewayMonitor:
         prompt: str = "Reply with the single word: ready",
         max_tokens: int = 256,
         probe_ttl: float = 300.0,
+        reprobe_ttl: float | None = None,
         timeout: float = 30.0,
     ) -> dict[str, bool]:
         """Probe all free/cheap-tier catalog models for liveness.
 
         Probes only models in the routable free set (FREE / QUOTA_FREE /
         CHEAP tiers) and skips:
-          - models not currently ``is_available`` (already excluded by a prior
-            circuit / quota hold -- no point spending a call to re-confirm)
+          - models in quota hold (genuinely unavailable until a known reset
+            time -- no point probing; the reset clears the hold)
           - models probed within ``probe_ttl`` seconds (throttle)
+
+        Circuit-open models (consecutive_failures >= threshold but not in
+        quota hold) ARE probed -- this is their recovery path. A transient
+        404/empty that tripped the circuit clears when a later probe succeeds
+        (record_success resets consecutive_failures). They use the longer
+        ``reprobe_ttl`` (default 4x probe_ttl) to bound calls on
+        permanently-dead models (finding #7/#16).
 
         Records success/failure so the circuit breaker + quota holds exclude
         false-advertised models from the routable set. Returns a mapping of
         probed model_id -> probe-outcome (True = responded with content,
         False = failed/empty/errored).
         """
+        if reprobe_ttl is None:
+            reprobe_ttl = probe_ttl * 4
         await self.refresh()
         results: dict[str, bool] = {}
         for model_id in list(self._gateway_models.keys()):
             tier = self.tier(model_id)
             if tier not in (ModelTier.FREE, ModelTier.QUOTA_FREE, ModelTier.CHEAP):
                 continue
-            if not self.is_available(model_id):
-                continue
             s = self.state(model_id)
-            if s.last_probe is not None and (time.time() - s.last_probe) < probe_ttl:
+            # Skip quota-hold models (known reset time -- the hold clears on
+            # its own). Circuit-open models are NOT skipped: they need a probe
+            # to recover when a transient issue clears.
+            if s.is_in_quota_hold:
+                continue
+            # Available models use probe_ttl; circuit-open models use the
+            # longer reprobe_ttl (recovery checks, bounded).
+            ttl = probe_ttl if s.is_available else reprobe_ttl
+            if s.last_probe is not None and (time.time() - s.last_probe) < ttl:
                 continue
             results[model_id] = await self.probe_liveness(
                 model_id, prompt=prompt, max_tokens=max_tokens, timeout=timeout,
@@ -605,12 +629,13 @@ class GatewayMonitor:
             tier = self.tier_for(model_id)
             # Score: tier priority, then capability overlap, then context length
             tier_score = {
+                ModelTier.FREE: 1500,
                 ModelTier.QUOTA_FREE: 1000,
                 ModelTier.CHEAP: 500,
                 ModelTier.STANDARD: 100,
                 ModelTier.PREMIUM: 0,
             }[tier]
-            if prefer_free and tier == ModelTier.QUOTA_FREE:
+            if prefer_free and tier in (ModelTier.FREE, ModelTier.QUOTA_FREE):
                 tier_score += 1000
 
             overlap = len(preferred_capabilities & set(caps.keys()))

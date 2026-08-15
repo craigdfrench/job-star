@@ -130,11 +130,11 @@ async def test_probe_free_pool_filters_to_free_cheap_tiers(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_probe_free_pool_skips_already_unavailable(monkeypatch):
-    """Models already in quota hold / circuit-open are not re-probed (no wasted call)."""
+async def test_probe_free_pool_skips_quota_hold_models(monkeypatch):
+    """Models in quota hold (known reset time) are not re-probed (no wasted call)."""
     mon = GatewayMonitor()
     _seed_catalog(mon, ["ollama/glm-5.2", "deepseek-v4"])
-    # Force glm-5.2 into quota hold
+    # Force glm-5.2 into quota hold (not circuit-open)
     mon.state("ollama/glm-5.2").enter_quota_hold(3600)
     fake = _FakeExecute({"deepseek-v4": _result(success=True, content="ok")})
     monkeypatch.setattr(monitor, "_execute_ai", fake)
@@ -144,6 +144,88 @@ async def test_probe_free_pool_skips_already_unavailable(monkeypatch):
     assert "ollama/glm-5.2" not in results
     assert "deepseek-v4" in results
     assert "ollama/glm-5.2" not in fake.calls  # not probed
+
+
+@pytest.mark.asyncio
+async def test_probe_free_pool_probes_circuit_open_models_for_recovery(monkeypatch):
+    """Circuit-open models (failures >= threshold, NOT in quota hold) ARE probed.
+
+    This is their recovery path: a transient 404/empty that tripped the circuit
+    clears when a later probe succeeds (record_success resets
+    consecutive_failures). Skipping them would strand them unavailable forever
+    (finding #7/#16).
+    """
+    mon = GatewayMonitor(failure_threshold=3)
+    _seed_catalog(mon, ["model=a&prov=free", "model=b&prov=nvidia"])
+    # Trip model=b's circuit (3 failures), no quota hold
+    s = mon.state("model=b&prov=nvidia")
+    for _ in range(3):
+        s.record_failure("HTTP 404")
+    assert not s.is_in_quota_hold  # circuit-open, not quota hold
+    assert not mon.is_available("model=b&prov=nvidia")
+
+    # Probe where model=b recovers (returns success)
+    fake = _FakeExecute({
+        "model=a&prov=free": _result(success=True, content="ok"),
+        "model=b&prov=nvidia": _result(success=True, content="ok"),
+    })
+    monkeypatch.setattr(monitor, "_execute_ai", fake)
+
+    results = await mon.probe_free_pool(reprobe_ttl=0.0)  # ignore throttle for the test
+
+    assert "model=b&prov=nvidia" in results  # circuit-open model WAS probed
+    assert results["model=b&prov=nvidia"] is True
+    # record_success reset the circuit -> available again
+    assert mon.is_available("model=b&prov=nvidia") is True
+    assert mon.state("model=b&prov=nvidia").consecutive_failures == 0
+
+
+@pytest.mark.asyncio
+async def test_probe_free_pool_circuit_open_uses_longer_reprobe_ttl(monkeypatch):
+    """Circuit-open models are throttled by reprobe_ttl (longer than probe_ttl)."""
+    mon = GatewayMonitor(failure_threshold=3)
+    _seed_catalog(mon, ["model=a&prov=free", "model=b&prov=nvidia"])
+    # Trip model=b's circuit
+    for _ in range(3):
+        mon.state("model=b&prov=nvidia").record_failure("HTTP 404")
+    # Mark both as probed just now (within probe_ttl but outside a tiny reprobe_ttl)
+    now = time.time()
+    mon.state("model=a&prov=free").last_probe = now
+    mon.state("model=b&prov=nvidia").last_probe = now
+    fake = _FakeExecute({
+        "model=a&prov=free": _result(success=True, content="ok"),
+        "model=b&prov=nvidia": _result(success=True, content="ok"),
+    })
+    monkeypatch.setattr(monitor, "_execute_ai", fake)
+
+    # probe_ttl=300 (recently probed -> available model skipped),
+    # reprobe_ttl=0  (circuit-open model NOT throttled -> probed)
+    results = await mon.probe_free_pool(probe_ttl=300.0, reprobe_ttl=0.0)
+
+    assert "model=a&prov=free" not in results  # throttled by probe_ttl
+    assert "model=b&prov=nvidia" in results     # circuit-open, reprobe_ttl=0 -> probed
+
+
+@pytest.mark.asyncio
+async def test_probe_liveness_sets_last_probe_before_the_call(monkeypatch):
+    """last_probe is set BEFORE the execute call so concurrent callers skip.
+
+    Guards against duplicate billable probes under overlapping invocations
+    (finding #6/#20). The fake asserts last_probe is already set when it runs.
+    """
+    mon = GatewayMonitor()
+    seen = {}
+
+    class _CheckFake:
+        async def __call__(self, *, prompt, model, max_tokens, timeout):
+            seen[model] = mon.state(model).last_probe
+            return _result(success=True, content="ok")
+
+    monkeypatch.setattr(monitor, "_execute_ai", _CheckFake())
+
+    await mon.probe_liveness("model=a&prov=free")
+
+    assert seen["model=a&prov=free"] is not None  # set before the call ran
 
 
 @pytest.mark.asyncio
