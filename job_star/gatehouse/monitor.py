@@ -29,7 +29,7 @@ from typing import Optional
 
 import httpx
 
-from .client import _get_config
+from .client import _get_config, execute as _execute_ai
 
 
 # How long to hold a model after a quota/availability error
@@ -185,6 +185,11 @@ class ModelState:
     observed_quota_windows: list[QuotaWindow] = field(default_factory=list)
     observed_retail_value: float = 0.0
     observed_reason: str | None = None
+    # Last time this model was actively probed for liveness (epoch seconds).
+    # Used by probe_free_pool to throttle re-probing. Distinct from last_seen
+    # (which is set on any successful real call) so a probe doesn't reset the
+    # probe-throttle clock confusingly.
+    last_probe: float | None = None
 
     @property
     def is_available(self) -> bool:
@@ -461,6 +466,86 @@ class GatewayMonitor:
         s.record_failure(error)
         if _is_quota_error(error):
             s.enter_quota_hold(self.quota_hold_seconds)
+
+    # ------------------------------------------------------------------
+    # Liveness probing (Vikunja #1709)
+    # ------------------------------------------------------------------
+    # The reactive circuit breaker (record_failure on real execute() failures,
+    # now including empty/non-string 200s via PR #14) excludes false-advertised
+    # models *after* they waste goal attempts. These probes add a *proactive*
+    # path: a minimal call to each free/cheap-tier model classifies it alive /
+    # dead *before* the router selects it for a real goal, feeding liveness
+    # back into the routable set (is_available) via the same record_success /
+    # record_failure path. False-advertised models (nvidia 404, cline empty
+    # content) trip the circuit on the probe instead of on a real plan.
+
+    async def probe_liveness(
+        self,
+        model_id: str,
+        prompt: str = "ping",
+        max_tokens: int = 16,
+        timeout: float = 30.0,
+    ) -> bool:
+        """Actively probe a model with a minimal call and record the result.
+
+        Sends a tiny prompt and classifies the response:
+          - success (200 with non-empty string content) -> record_success
+          - failure / empty / non-string / HTTP error   -> record_failure
+
+        Returns True if the model is still available after the probe (i.e. the
+        probe did not trip the circuit / quota hold), False otherwise. Records
+        last_probe for throttle use by probe_free_pool.
+        """
+        result = await _execute_ai(
+            prompt=prompt, model=model_id, max_tokens=max_tokens, timeout=timeout,
+        )
+        s = self.state(model_id)
+        if result.success:
+            self.record_success(
+                model_id, tokens=result.output_tokens, x_gatehouse=result.x_gatehouse,
+            )
+        else:
+            self.record_failure(model_id, result.error or "liveness probe failed")
+        s.last_probe = time.time()
+        return self.is_available(model_id)
+
+    async def probe_free_pool(
+        self,
+        max_models: int | None = None,
+        prompt: str = "ping",
+        max_tokens: int = 16,
+        probe_ttl: float = 300.0,
+        timeout: float = 30.0,
+    ) -> dict[str, bool]:
+        """Probe all free/cheap-tier catalog models for liveness.
+
+        Probes only models in the routable free set (FREE / QUOTA_FREE /
+        CHEAP tiers) and skips:
+          - models not currently ``is_available`` (already excluded by a prior
+            circuit / quota hold -- no point spending a call to re-confirm)
+          - models probed within ``probe_ttl`` seconds (throttle)
+
+        Records success/failure so the circuit breaker + quota holds exclude
+        false-advertised models from the routable set. Returns a mapping of
+        probed model_id -> available-after-probe.
+        """
+        await self.refresh()
+        results: dict[str, bool] = {}
+        for model_id in list(self._gateway_models.keys()):
+            tier = self.tier(model_id)
+            if tier not in (ModelTier.FREE, ModelTier.QUOTA_FREE, ModelTier.CHEAP):
+                continue
+            if not self.is_available(model_id):
+                continue
+            s = self.state(model_id)
+            if s.last_probe is not None and (time.time() - s.last_probe) < probe_ttl:
+                continue
+            results[model_id] = await self.probe_liveness(
+                model_id, prompt=prompt, max_tokens=max_tokens, timeout=timeout,
+            )
+            if max_models is not None and len(results) >= max_models:
+                break
+        return results
 
     def time_until_available(self, model_id: str) -> float:
         """Return seconds until a model is available again (0 if available now)."""
