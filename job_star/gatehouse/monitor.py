@@ -29,7 +29,7 @@ from typing import Optional
 
 import httpx
 
-from .client import _get_config
+from .client import _get_config, execute as _execute_ai
 
 
 # How long to hold a model after a quota/availability error
@@ -185,6 +185,11 @@ class ModelState:
     observed_quota_windows: list[QuotaWindow] = field(default_factory=list)
     observed_retail_value: float = 0.0
     observed_reason: str | None = None
+    # Last time this model was actively probed for liveness (epoch seconds).
+    # Used by probe_free_pool to throttle re-probing. Distinct from last_seen
+    # (which is set on any successful real call) so a probe doesn't reset the
+    # probe-throttle clock confusingly.
+    last_probe: float | None = None
 
     @property
     def is_available(self) -> bool:
@@ -336,7 +341,10 @@ class GatewayMonitor:
         if allow_expensive:
             return True
         tier = self.tier_for(model_id)
-        return tier in (ModelTier.QUOTA_FREE, ModelTier.CHEAP)
+        # FREE (truly free, no quota) is the best fallback -- include it even
+        # without allow_expensive. Previously FREE was excluded, leaving truly
+        # free models unroutable as fallbacks.
+        return tier in (ModelTier.FREE, ModelTier.QUOTA_FREE, ModelTier.CHEAP)
 
     def cost_kind(self, model_id: str) -> CostKind:
         """Return the gatehouse cost kind for a model."""
@@ -462,6 +470,118 @@ class GatewayMonitor:
         if _is_quota_error(error):
             s.enter_quota_hold(self.quota_hold_seconds)
 
+    # ------------------------------------------------------------------
+    # Liveness probing (Vikunja #1709)
+    # ------------------------------------------------------------------
+    # The reactive circuit breaker (record_failure on real execute() failures,
+    # now including empty/non-string 200s via PR #14) excludes false-advertised
+    # models *after* they waste goal attempts. These probes add a *proactive*
+    # path: a minimal call to each free/cheap-tier model classifies it alive /
+    # dead *before* the router selects it for a real goal, feeding liveness
+    # back into the routable set (is_available) via the same record_success /
+    # record_failure path. False-advertised models (nvidia 404, cline empty
+    # content) trip the circuit on the probe instead of on a real plan.
+
+    async def probe_liveness(
+        self,
+        model_id: str,
+        prompt: str = "Reply with the single word: ready",
+        max_tokens: int = 256,
+        timeout: float = 30.0,
+    ) -> bool:
+        """Actively probe a model with a minimal call and record the result.
+
+        Sends a tiny prompt and classifies the response:
+          - success (200 with non-empty string content) -> record_success
+          - failure / empty / non-string / HTTP error   -> record_failure
+
+        The default max_tokens (256) is sized for **reasoning models**: a
+        reasoning model can burn ~64-80 tokens on thinking before emitting any
+        visible content, so a too-small budget (e.g. 16) yields an empty 200 --
+        a false-negative that would trip the circuit on a working model. 256
+        covers the free/cheap pool comfortably; the actual output is tiny.
+
+        Returns the **probe outcome** (True if the call succeeded with
+        content, False if it failed). This is the signal callers want: did the
+        model actually respond? Post-probe *availability* (whether the circuit
+        / quota hold has tripped after recording) is a separate question answered
+        by is_available(); a single failed probe returns False here while the
+        model may still be is_available (the circuit opens after
+        failure_threshold consecutive failures).
+        """
+        s = self.state(model_id)
+        # Reserve the probe slot BEFORE the await so a concurrent
+        # probe_free_pool caller's throttle check skips this model (avoids
+        # duplicate billable probes under overlapping invocations -- finding
+        # #6/#20). _execute_ai never raises (returns ExecutionResult on
+        # failure), so last_probe is always set even on a failed probe.
+        s.last_probe = time.time()
+        result = await _execute_ai(
+            prompt=prompt, model=model_id, max_tokens=max_tokens, timeout=timeout,
+        )
+        if result.success:
+            self.record_success(
+                model_id, tokens=result.output_tokens, x_gatehouse=result.x_gatehouse,
+            )
+        else:
+            self.record_failure(model_id, result.error or "liveness probe failed")
+        return result.success
+
+    async def probe_free_pool(
+        self,
+        max_models: int | None = None,
+        prompt: str = "Reply with the single word: ready",
+        max_tokens: int = 256,
+        probe_ttl: float = 300.0,
+        reprobe_ttl: float | None = None,
+        timeout: float = 30.0,
+    ) -> dict[str, bool]:
+        """Probe all free/cheap-tier catalog models for liveness.
+
+        Probes only models in the routable free set (FREE / QUOTA_FREE /
+        CHEAP tiers) and skips:
+          - models in quota hold (genuinely unavailable until a known reset
+            time -- no point probing; the reset clears the hold)
+          - models probed within ``probe_ttl`` seconds (throttle)
+
+        Circuit-open models (consecutive_failures >= threshold but not in
+        quota hold) ARE probed -- this is their recovery path. A transient
+        404/empty that tripped the circuit clears when a later probe succeeds
+        (record_success resets consecutive_failures). They use the longer
+        ``reprobe_ttl`` (default 4x probe_ttl) to bound calls on
+        permanently-dead models (finding #7/#16).
+
+        Records success/failure so the circuit breaker + quota holds exclude
+        false-advertised models from the routable set. Returns a mapping of
+        probed model_id -> probe-outcome (True = responded with content,
+        False = failed/empty/errored).
+        """
+        if reprobe_ttl is None:
+            reprobe_ttl = probe_ttl * 4
+        await self.refresh()
+        results: dict[str, bool] = {}
+        for model_id in list(self._gateway_models.keys()):
+            tier = self.tier(model_id)
+            if tier not in (ModelTier.FREE, ModelTier.QUOTA_FREE, ModelTier.CHEAP):
+                continue
+            s = self.state(model_id)
+            # Skip quota-hold models (known reset time -- the hold clears on
+            # its own). Circuit-open models are NOT skipped: they need a probe
+            # to recover when a transient issue clears.
+            if s.is_in_quota_hold:
+                continue
+            # Available models use probe_ttl; circuit-open models use the
+            # longer reprobe_ttl (recovery checks, bounded).
+            ttl = probe_ttl if s.is_available else reprobe_ttl
+            if s.last_probe is not None and (time.time() - s.last_probe) < ttl:
+                continue
+            results[model_id] = await self.probe_liveness(
+                model_id, prompt=prompt, max_tokens=max_tokens, timeout=timeout,
+            )
+            if max_models is not None and len(results) >= max_models:
+                break
+        return results
+
     def time_until_available(self, model_id: str) -> float:
         """Return seconds until a model is available again (0 if available now)."""
         s = self.state(model_id)
@@ -509,12 +629,13 @@ class GatewayMonitor:
             tier = self.tier_for(model_id)
             # Score: tier priority, then capability overlap, then context length
             tier_score = {
+                ModelTier.FREE: 1500,
                 ModelTier.QUOTA_FREE: 1000,
                 ModelTier.CHEAP: 500,
                 ModelTier.STANDARD: 100,
                 ModelTier.PREMIUM: 0,
             }[tier]
-            if prefer_free and tier == ModelTier.QUOTA_FREE:
+            if prefer_free and tier in (ModelTier.FREE, ModelTier.QUOTA_FREE):
                 tier_score += 1000
 
             overlap = len(preferred_capabilities & set(caps.keys()))

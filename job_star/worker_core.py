@@ -44,6 +44,12 @@ class Worker:
         self.generation = int(os.environ.get("JOB_STAR_GENERATION", "1"))
         self._draining = False
         self._registered = False
+        # Background liveness-probe task (generic worker only). Periodically
+        # probes the free/cheap model pool so the monitor's routable set reflects
+        # probed liveness, not just reactive failures (Vikunja #1709). The
+        # monitor is per-process, so the probe must run in the worker that does
+        # planning -- a standalone probe process wouldn't share its findings.
+        self._probe_task: Optional[asyncio.Task] = None
         # Backoff state for blocked steps. When the supervisor blocks a step
         # (budget/retries exhausted), we must not immediately re-claim — that
         # caused the 2026-07-14 hot loop. We sleep with exponential backoff,
@@ -57,6 +63,12 @@ class Worker:
     BACKOFF_FLOOR_SEC: float = 15.0
     BACKOFF_MAX_SEC: float = 300.0   # 5 min cap
     BACKOFF_GROWTH: float = 2.0     # double each consecutive block
+
+    # Liveness-probe cadence for the background probe task (generic worker).
+    # Env-overridable via JOB_STAR_PROBE_INTERVAL. The probe itself throttles
+    # per-model via probe_free_pool's probe_ttl (default 300s), so this is the
+    # outer loop sleep between probe sweeps.
+    PROBE_INTERVAL_SEC: float = float(os.environ.get("JOB_STAR_PROBE_INTERVAL", "600"))
 
     async def _register(self) -> None:
         """Register this worker in the worker_registry table."""
@@ -224,6 +236,28 @@ class Worker:
                 print(f"  [{self.worker_id}] planning failed: {exc}", flush=True)
         return False
 
+    async def _run_liveness_probe_loop(self) -> None:
+        """Background loop: periodically probe the free/cheap model pool.
+
+        Feeds probed liveness into this worker's gateway monitor so the router
+        excludes false-advertised models (404/empty) before selecting them for a
+        real goal (Vikunja #1709). Runs only in the generic (non-expert) worker
+        to avoid every worker re-probing the same pool. Swallows all exceptions
+        so it never breaks the worker's main loop; the probe is best-effort.
+        """
+        while not getattr(self, '_draining', False):
+            try:
+                results = await self.orch.gateway_monitor.probe_free_pool()
+                if results:
+                    alive = sum(1 for v in results.values() if v)
+                    print(f"  [{self.worker_id}] liveness probe: {alive}/{len(results)} free/cheap models alive", flush=True)
+            except Exception as e:
+                print(f"  [{self.worker_id}] liveness probe error: {type(e).__name__}: {e}", flush=True)
+            try:
+                await asyncio.sleep(self.PROBE_INTERVAL_SEC)
+            except asyncio.CancelledError:
+                raise
+
     async def run_once(self) -> str:
         """Claim and execute one work unit (job_queue or pending step).
 
@@ -316,6 +350,12 @@ class Worker:
         await self._register()
         await self._heartbeat()
 
+        # Start the background liveness-probe task in the generic worker only.
+        # Expert workers skip it to avoid every worker re-probing the same pool.
+        if self.expert is None and self.expert_any is False:
+            self._probe_task = asyncio.create_task(self._run_liveness_probe_loop())
+            print(f"  [{self.worker_id}] liveness probe task started (interval={self.PROBE_INTERVAL_SEC:.0f}s)", flush=True)
+
         cycle = 0
         try:
             while True:
@@ -365,6 +405,12 @@ class Worker:
             print(f"  [{self.worker_id}] cancelled.", flush=True)
             raise
         finally:
+            if self._probe_task is not None:
+                self._probe_task.cancel()
+                try:
+                    await self._probe_task
+                except (asyncio.CancelledError, Exception):
+                    pass
             await self._unregister()
             await close_pool()
 
