@@ -77,7 +77,7 @@ EXPERT_KEYWORDS: dict[str, list[str]] = {
         "review_error", "verdict: pass", "verdict: block",
     ],
     "research": [
-        "tickle file", "research", "monitor", "check-in", "check in",
+        "tickle file", "research", "monitor", "monitoring", "check-in", "check in",
         "recurring", "monthly check", "track developments", "follow up on",
         "keep an eye on", "watch for", "stay updated", "stay current",
         "new insights", "interesting articles", "tickle",
@@ -122,7 +122,7 @@ def _score_text(text: str, keywords: dict[str, list[str]]) -> dict[str, float]:
     for category, words in keywords.items():
         score = 0.0
         for kw in words:
-            if kw in text_lower:
+            if _keyword_prefix_matches(kw, text_lower):
                 score += 1.0
         scores[category] = score
     # Normalize
@@ -270,6 +270,11 @@ def _detect_expert(request: IntakeRequest) -> Optional[str]:
     return None
 
 
+def _is_word_char(ch: str) -> bool:
+    """True if ch is a word character (for conditional \\b anchoring)."""
+    return bool(ch) and (ch.isalnum() or ch == "_")
+
+
 def _keyword_matches(keyword: str, text: str) -> bool:
     """Match a keyword against text on word boundaries.
 
@@ -278,8 +283,28 @@ def _keyword_matches(keyword: str, text: str) -> bool:
     "special", "practice") -- routing personal/feature goals to the CI expert
     worker, which stamps template steps instead of AI-planning them. Word
     boundaries make short keywords match only as whole words.
+
+    Boundary anchors are only added where the keyword's edge is a word
+    character, so keywords like "/etc/gatehouse" (leading slash) still match.
     """
-    pattern = r"\b" + re.escape(keyword) + r"\b"
+    lead = r"\b" if _is_word_char(keyword[:1]) else ""
+    trail = r"\b" if _is_word_char(keyword[-1:]) else ""
+    pattern = lead + re.escape(keyword) + trail
+    return re.search(pattern, text, re.IGNORECASE) is not None
+
+
+def _keyword_prefix_matches(keyword: str, text: str) -> bool:
+    """Match a keyword as a word *prefix* (leading boundary only).
+
+    Used by _score_text for domain/urgency/type classification: those keyword
+    lists are authored as stems ("crash" for crashed/crashes, "port" for
+    ports, "photo" for photos), so a trailing boundary would kill recall.
+    The leading boundary alone still eliminates mid-word false positives
+    ("important" no longer scores INFRA via "port", "latest" no longer scores
+    CODING via "test") while preserving inflection matching.
+    """
+    lead = r"\b" if _is_word_char(keyword[:1]) else ""
+    pattern = lead + re.escape(keyword)
     return re.search(pattern, text, re.IGNORECASE) is not None
 
 
@@ -310,7 +335,15 @@ async def triage(request: IntakeRequest, check_duplicates: bool = True) -> Triag
     keywords = _extract_keywords(request.full_text)
 
     # Detect expert
-    expert = _detect_expert(request)
+    # Honor an explicitly-pinned expert (documented on IntakeRequest as
+    # "explicit expert routing (overrides triage)" but previously dead --
+    # _detect_expert never consulted request.expert).
+    expert = request.expert or _detect_expert(request)
+    # Propagate into the request before duplicate checking so
+    # _check_duplicates' expert-aware filter (distinct experts => not a dup)
+    # sees the same expert TriageResult will report.
+    if expert and not request.expert:
+        request.expert = expert
 
     # Check duplicates
     is_dup = False
