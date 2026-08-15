@@ -7,22 +7,46 @@ This is the execution layer. It talks to the gatehouse-ai HTTP API
 from __future__ import annotations
 
 import os
-from typing import Optional
 
 from ..models import ExecutionResult
 
 
 def _get_config() -> tuple[str, str, str]:
     """Get gateway URL, API key, and default model from environment."""
-    base_url = os.environ.get("GATEHOUSE_API_URL", "http://100.64.158.87:8090/v1")
-    api_key = os.environ.get("GATEHOUSE_API_KEY", "no-key-needed")
-    default_model = os.environ.get("JOB_STAR_MODEL", "ollama/glm-5.2")
+    # `or default` (not os.environ.get(k, default)) so an explicitly-empty env
+    # var falls back to the default instead of silently overriding it.
+    base_url = os.environ.get("GATEHOUSE_API_URL") or "http://100.64.158.87:8090/v1"
+    api_key = os.environ.get("GATEHOUSE_API_KEY") or "no-key-needed"
+    default_model = os.environ.get("JOB_STAR_MODEL") or "ollama/glm-5.2"
     return base_url, api_key, default_model
+
+
+def _api_url(base_url: str) -> str:
+    """Build the chat-completions URL, tolerating a trailing slash in the base.
+
+    A trailing slash in GATEHOUSE_API_URL previously produced a double-slash
+    path (".../v1//chat/completions") which some gateways reject.
+    """
+    return f"{base_url.rstrip('/')}/chat/completions"
+
+
+def _health_url(base_url: str) -> str:
+    """Build the health URL, stripping only a *trailing* /v1 suffix.
+
+    The previous `base_url.replace("/v1", "")` was a global substring replace
+    that corrupted any URL containing "/v1" elsewhere (e.g.
+    "https://host/v1proxy/v1" -> "https://hostproxy"). Suffix-anchored strip
+    only removes the API version segment.
+    """
+    base = base_url.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")]
+    return f"{base}/health"
 
 
 async def execute(
     prompt: str,
-    model: str,
+    model: str | None = None,
     system_prompt: str | None = None,
     max_tokens: int = 4096,
     temperature: float = 0.7,
@@ -32,20 +56,27 @@ async def execute(
 
     Args:
         prompt: The user prompt to send.
-        model: The model identifier (e.g., "ollama/glm-5.2").
+        model: The model identifier (e.g., "ollama/glm-5.2"). Falls back to the
+            JOB_STAR_MODEL env default when empty/None.
         system_prompt: Optional system prompt.
         max_tokens: Maximum output tokens.
         temperature: Sampling temperature.
-        timeout: HTTP timeout in seconds. Default 300 (5 min) because reasoning
-            models generating large code outputs (16k tokens) can take well
-            over the previous 120s default, causing ReadTimeout failures.
+        timeout: HTTP read/write timeout in seconds. Default 300 (5 min) because
+            reasoning models generating large code outputs (16k tokens) can take
+            well over the previous 120s default, causing ReadTimeout failures.
+            Connection establishment is capped separately (15s) so a dead host
+            fails fast instead of hanging for the full read timeout.
 
     Returns:
         ExecutionResult with the AI's response.
     """
     import httpx
 
-    base_url, api_key, _ = _get_config()
+    base_url, api_key, default_model = _get_config()
+    # Make the documented JOB_STAR_MODEL default effective: an empty/None model
+    # previously passed through as-is (the config value was computed then
+    # discarded by its only caller).
+    model = model or default_model
 
     messages: list[dict[str, str]] = []
     if system_prompt:
@@ -53,9 +84,11 @@ async def execute(
     messages.append({"role": "user", "content": prompt})
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout, connect=15.0)
+        ) as client:
             response = await client.post(
-                f"{base_url}/chat/completions",
+                _api_url(base_url),
                 headers={
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {api_key}",
@@ -84,10 +117,57 @@ async def execute(
                 model=model,
             )
 
-        data = response.json()
-        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-        usage = data.get("usage", {})
-        x_gatehouse = usage.get("x_gatehouse", {}) or {}
+        try:
+            data = response.json()
+        except ValueError as e:
+            # A 200 with a non-JSON body (e.g. a proxy HTML error page)
+            # previously raised into the generic except, discarding the raw
+            # body needed for diagnosis.
+            return ExecutionResult(
+                success=False,
+                error=f"non-JSON 200 response ({type(e).__name__}): {response.text[:200]}",
+                model=model,
+            )
+
+        if not isinstance(data, dict):
+            return ExecutionResult(
+                success=False,
+                error=f"non-object 200 response body: {type(data).__name__}",
+                model=model,
+            )
+
+        # Guard the choices indexing: a spec-legal 200 can carry an empty
+        # choices list (error/filter conditions), which previously raised
+        # IndexError into the broad except as an opaque failure.
+        choices = data.get("choices") or []
+        if not choices or not isinstance(choices[0], dict):
+            return ExecutionResult(
+                success=False,
+                error="empty or malformed choices array in 200 response",
+                model=model,
+            )
+        message = choices[0].get("message")
+        if not isinstance(message, dict):
+            message = {}
+        content = message.get("content", "")
+        # `usage`/`x_gatehouse` can be explicitly null in valid JSON -- the
+        # `.get(k, {})` default only fires when the key is absent, so a null
+        # value previously raised AttributeError into the broad except.
+        usage = data.get("usage")
+        if not isinstance(usage, dict):
+            usage = {}
+        x_gatehouse = usage.get("x_gatehouse")
+        if not isinstance(x_gatehouse, dict):
+            x_gatehouse = {}
+
+        def _tok(key: str) -> int:
+            try:
+                return int(usage.get(key) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        input_tokens = _tok("prompt_tokens")
+        output_tokens = _tok("completion_tokens")
 
         # Treat an empty/whitespace 200 as a failure. Some providers return
         # 200 with zero output tokens (notably `model=glm-5.2&prov=cline`
@@ -108,8 +188,8 @@ async def execute(
                 success=False,
                 error=f"non-string content from model: {type(content).__name__}",
                 model=data.get("model", model),
-                input_tokens=usage.get("prompt_tokens", 0),
-                output_tokens=usage.get("completion_tokens", 0),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
                 x_gatehouse=x_gatehouse,
             )
         if not content.strip():
@@ -117,16 +197,16 @@ async def execute(
                 success=False,
                 error="empty response from model",
                 model=data.get("model", model),
-                input_tokens=usage.get("prompt_tokens", 0),
-                output_tokens=usage.get("completion_tokens", 0),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
                 x_gatehouse=x_gatehouse,
             )
 
         return ExecutionResult(
             content=content,
             model=data.get("model", model),
-            input_tokens=usage.get("prompt_tokens", 0),
-            output_tokens=usage.get("completion_tokens", 0),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             success=True,
             x_gatehouse=x_gatehouse,
         )
@@ -144,10 +224,9 @@ async def check_health() -> bool:
     import httpx
 
     base_url, _, _ = _get_config()
-    # Strip /v1 for health check
-    health_url = base_url.replace("/v1", "") + "/health"
+    health_url = _health_url(base_url)
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5, connect=5)) as client:
             resp = await client.get(health_url)
             return resp.status_code == 200
     except Exception:

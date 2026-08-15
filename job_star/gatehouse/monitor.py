@@ -369,7 +369,7 @@ class GatewayMonitor:
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.get(
-                    f"{base_url}/models",
+                    f"{base_url.rstrip('/')}/models",
                     headers={"Authorization": f"Bearer {api_key}"},
                 )
                 if resp.status_code == 200:
