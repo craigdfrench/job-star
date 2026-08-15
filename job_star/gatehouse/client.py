@@ -20,6 +20,29 @@ def _get_config() -> tuple[str, str, str]:
     return base_url, api_key, default_model
 
 
+def _api_url(base_url: str) -> str:
+    """Build the chat-completions URL, tolerating a trailing slash in the base.
+
+    A trailing slash in GATEHOUSE_API_URL previously produced a double-slash
+    path (".../v1//chat/completions") which some gateways reject.
+    """
+    return f"{base_url.rstrip('/')}/chat/completions"
+
+
+def _health_url(base_url: str) -> str:
+    """Build the health URL, stripping only a *trailing* /v1 suffix.
+
+    The previous `base_url.replace("/v1", "")` was a global substring replace
+    that corrupted any URL containing "/v1" elsewhere (e.g.
+    "https://host/v1proxy/v1" -> "https://hostproxy"). Suffix-anchored strip
+    only removes the API version segment.
+    """
+    base = base_url.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")]
+    return f"{base}/health"
+
+
 async def execute(
     prompt: str,
     model: str,
@@ -32,20 +55,27 @@ async def execute(
 
     Args:
         prompt: The user prompt to send.
-        model: The model identifier (e.g., "ollama/glm-5.2").
+        model: The model identifier (e.g., "ollama/glm-5.2"). Falls back to the
+            JOB_STAR_MODEL env default when empty/None.
         system_prompt: Optional system prompt.
         max_tokens: Maximum output tokens.
         temperature: Sampling temperature.
-        timeout: HTTP timeout in seconds. Default 300 (5 min) because reasoning
-            models generating large code outputs (16k tokens) can take well
-            over the previous 120s default, causing ReadTimeout failures.
+        timeout: HTTP read/write timeout in seconds. Default 300 (5 min) because
+            reasoning models generating large code outputs (16k tokens) can take
+            well over the previous 120s default, causing ReadTimeout failures.
+            Connection establishment is capped separately (15s) so a dead host
+            fails fast instead of hanging for the full read timeout.
 
     Returns:
         ExecutionResult with the AI's response.
     """
     import httpx
 
-    base_url, api_key, _ = _get_config()
+    base_url, api_key, default_model = _get_config()
+    # Make the documented JOB_STAR_MODEL default effective: an empty/None model
+    # previously passed through as-is (the config value was computed then
+    # discarded by its only caller).
+    model = model or default_model
 
     messages: list[dict[str, str]] = []
     if system_prompt:
@@ -53,9 +83,11 @@ async def execute(
     messages.append({"role": "user", "content": prompt})
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout, connect=15.0)
+        ) as client:
             response = await client.post(
-                f"{base_url}/chat/completions",
+                _api_url(base_url),
                 headers={
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {api_key}",
@@ -84,8 +116,30 @@ async def execute(
                 model=model,
             )
 
-        data = response.json()
-        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        try:
+            data = response.json()
+        except ValueError as e:
+            # A 200 with a non-JSON body (e.g. a proxy HTML error page)
+            # previously raised into the generic except, discarding the raw
+            # body needed for diagnosis.
+            return ExecutionResult(
+                success=False,
+                error=f"non-JSON 200 response ({type(e).__name__}): {response.text[:200]}",
+                model=model,
+            )
+
+        # Guard the choices indexing: a spec-legal 200 can carry an empty
+        # choices list (error/filter conditions), which previously raised
+        # IndexError into the broad except as an opaque failure.
+        choices = data.get("choices") or []
+        if not choices or not isinstance(choices[0], dict):
+            return ExecutionResult(
+                success=False,
+                error="empty or malformed choices array in 200 response",
+                model=model,
+            )
+        message = choices[0].get("message") or {}
+        content = message.get("content", "")
         usage = data.get("usage", {})
         x_gatehouse = usage.get("x_gatehouse", {}) or {}
 
@@ -144,8 +198,7 @@ async def check_health() -> bool:
     import httpx
 
     base_url, _, _ = _get_config()
-    # Strip /v1 for health check
-    health_url = base_url.replace("/v1", "") + "/health"
+    health_url = _health_url(base_url)
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             resp = await client.get(health_url)
