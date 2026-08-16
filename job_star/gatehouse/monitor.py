@@ -731,16 +731,41 @@ def _get_cost_kind_from_config(model_id: str) -> CostKind:
 
 
 def _is_quota_error(error_str: str) -> bool:
-    """Detect whether an error string indicates quota/availability issues."""
-    indicators = [
-        "quota", "rate limit", "too many requests", "capacity",
-        "exhausted", "limit reached", "try again later", "unavailable",
-        "model not loaded", "model not found", "timeout", "gateway timeout",
-        "404", "429", "503", "502", "500", "bad gateway", "service unavailable",
-        "unauthorized", "401", "forbidden", "403",
-    ]
+    """Detect whether an error indicates genuine quota/capacity exhaustion.
+
+    record_failure() uses this to decide whether a failure ALSO enters the
+    long quota hold (3h). The hold is only appropriate for conditions that
+    reliably mean "resource exhausted for a sustained period":
+
+      - explicit quota / rate-limit language and HTTP 429
+      - upstream capacity: HTTP 502/503, "unavailable", "model not loaded"
+
+    Everything else -- model-not-found (404), timeouts, generic 5xx, and
+    401/403 auth -- is NOT quota. Transient/config errors are handled by the
+    per-step circuit breaker (consecutive_failures >= threshold) and, since PR
+    #15, by the liveness probe's recovery path; they must NOT impose a 3h hold
+    that would strand the model from probing. The old indicators list over-matched
+    on "timeout"/"404"/"500"/"401"/"403", causing false 3h holds.
+    """
     lower = str(error_str).lower()
-    return any(k in lower for k in indicators)
+
+    # Genuine quota/rate-limit signals.
+    quota_words = (
+        "quota", "rate limit", "too many requests", "capacity",
+        "exhausted", "limit reached", "try again later", "429",
+    )
+    if any(w in lower for w in quota_words):
+        return True
+
+    # Upstream capacity / unavailable (server-side resource exhaustion).
+    capacity_words = (
+        "bad gateway", "service unavailable", "502", "503", "unavailable",
+        "model not loaded",
+    )
+    if any(w in lower for w in capacity_words):
+        return True
+
+    return False
 
 
 def _cost_class_to_tier(cost_class: str) -> ModelTier:
