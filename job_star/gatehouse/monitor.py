@@ -173,6 +173,7 @@ class QuotaWindow:
 class ModelState:
     """Health state of a single model."""
     name: str
+    failure_threshold: int = DEFAULT_FAILURE_THRESHOLD
     last_seen: float | None = None
     consecutive_failures: int = 0
     quota_hold_until: float = 0.0  # epoch seconds
@@ -195,7 +196,7 @@ class ModelState:
     def is_available(self) -> bool:
         if time.time() <= self.quota_hold_until:
             return False
-        if self.consecutive_failures >= DEFAULT_FAILURE_THRESHOLD:
+        if self.consecutive_failures >= self.failure_threshold:
             return False
         # If any quota window is exhausted, the model is unavailable until reset
         for w in self.observed_quota_windows:
@@ -403,14 +404,16 @@ class GatewayMonitor:
         self._last_refresh = now
         for model_id in self._gateway_models:
             if model_id not in self._states:
-                self._states[model_id] = ModelState(name=model_id)
+                self._states[model_id] = ModelState(
+                    name=model_id, failure_threshold=self.failure_threshold)
 
         return self._gateway_models
 
     def state(self, model_id: str) -> ModelState:
         """Get or create state for a model."""
         if model_id not in self._states:
-            self._states[model_id] = ModelState(name=model_id)
+            self._states[model_id] = ModelState(
+                name=model_id, failure_threshold=self.failure_threshold)
         return self._states[model_id]
 
     def is_available(self, model_id: str) -> bool:
@@ -487,6 +490,7 @@ class GatewayMonitor:
         """Record a failed model invocation."""
         s = self.state(model_id)
         s.record_failure(error)
+        s.total_requests += 1
         if _is_quota_error(error):
             s.enter_quota_hold(self.quota_hold_seconds)
 
