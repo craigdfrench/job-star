@@ -362,8 +362,8 @@ def test_check_retries_uses_db_backed_consecutive_failures():
     """check_retries must read the DB-backed consecutive_failures count, not
     just the in-memory dict. This is the circuit breaker that persists across
     worker restarts (migration 003)."""
-    sup = Supervisor()
-    # 3 consecutive failures (>= default max_step_retries=3) -> blocked
+    sup = Supervisor(max_step_retries=3)
+    # 3 consecutive failures (>= configured max_step_retries=3) -> blocked
     ok, reason = sup.budget.check_retries("step-x", consecutive_failures=3)
     assert not ok
     assert "Max retries exceeded" in reason
@@ -386,7 +386,7 @@ async def test_retry_exhaustion_triggers_pause_goal_not_deny(db_pool):
 
     Uses the db_pool fixture so the asyncpg pool lifecycle is managed across
     tests (check_before_execute calls check_budget_db, a real DB query)."""
-    sup = Supervisor()
+    sup = Supervisor(max_step_retries=3)
     goal = Goal(title="Test", id="test-retry", domain=Domain.CODING, urgency=Urgency.SOON)
     from job_star.models import Step
     step = Step(title="Do something", id="step-retry", goal_id="test-retry",
