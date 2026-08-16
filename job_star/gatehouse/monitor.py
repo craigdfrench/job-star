@@ -360,7 +360,18 @@ class GatewayMonitor:
         return self.cost_kind(model_id) == CostKind.INCLUDED_UNLIMITED
 
     async def refresh(self, force: bool = False) -> dict[str, dict]:
-        """Fetch the model list from gatehouse. Cached for 60s."""
+        """Fetch the model list from gatehouse. Cached for 60s. Fail-open.
+
+        On a failed fetch (network error, non-200 status, or an unparseable
+        payload) the **last-known-good** catalog is PRESERVED rather than wiped
+        to ``{}``, and ``_last_refresh`` is NOT advanced. A transient /models blip
+        therefore never fail-closes routing/fallback/liveness (which previously
+        left an empty catalog cached for the full 60s TTL), and an empty/absent
+        catalog is never stuck for the TTL -- the next ``refresh()`` retries.
+
+        Only a successful fetch (HTTP 200 + parseable payload) replaces the
+        catalog and stamps ``_last_refresh``.
+        """
         now = time.time()
         if not force and self._gateway_models and (now - self._last_refresh) < self._cache_ttl:
             return self._gateway_models
@@ -372,14 +383,15 @@ class GatewayMonitor:
                     f"{base_url.rstrip('/')}/models",
                     headers={"Authorization": f"Bearer {api_key}"},
                 )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    self._gateway_models = {m["id"]: m for m in data.get("data", []) if "id" in m}
-                else:
-                    self._gateway_models = {}
+                if resp.status_code != 200:
+                    # Transient failure: keep last-known-good catalog, retry sooner.
+                    return self._gateway_models
+                fetched = {m["id"]: m for m in resp.json().get("data", []) if "id" in m}
         except Exception:
-            self._gateway_models = {}
+            # Network error / bad payload: preserve prior catalog; retry next time.
+            return self._gateway_models
 
+        self._gateway_models = fetched
         self._last_refresh = now
         for model_id in self._gateway_models:
             if model_id not in self._states:
