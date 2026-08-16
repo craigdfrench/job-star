@@ -369,8 +369,8 @@ class GatewayMonitor:
         left an empty catalog cached for the full 60s TTL), and an empty/absent
         catalog is never stuck for the TTL -- the next ``refresh()`` retries.
 
-        Only a successful fetch (HTTP 200 + parseable payload) replaces the
-        catalog and stamps ``_last_refresh``.
+        Only a successful fetch (HTTP 200 + parseable, non-empty ``data`` list)
+        replaces the catalog and stamps ``_last_refresh``.
         """
         now = time.time()
         if not force and self._gateway_models and (now - self._last_refresh) < self._cache_ttl:
@@ -387,6 +387,14 @@ class GatewayMonitor:
                     # Transient failure: keep last-known-good catalog, retry sooner.
                     return self._gateway_models
                 fetched = {m["id"]: m for m in resp.json().get("data", []) if "id" in m}
+                if not fetched:
+                    # A 200 with empty/missing data is indistinguishable from a
+                    # degraded gateway (and in practice gatehouse returns the full
+                    # model list even when most of the pool is down). Treat it like
+                    # a failure: preserve last-known-good and DO NOT stamp
+                    # _last_refresh, so an empty catalog is never cached-and-stuck
+                    # for the TTL fail-closing routing.
+                    return self._gateway_models
         except Exception:
             # Network error / bad payload: preserve prior catalog; retry next time.
             return self._gateway_models

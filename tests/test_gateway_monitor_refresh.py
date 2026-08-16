@@ -216,6 +216,50 @@ async def test_refresh_recovers_after_failure(monkeypatch, mon):
 
 
 @pytest.mark.asyncio
+async def test_refresh_empty_200_preserves_last_known_good(monkeypatch, mon):
+    """A 200 with empty/missing data must NOT fail-close: preserve LKG and
+    don't stamp _last_refresh, so an empty catalog is never cached-and-stuck
+    for the TTL (review finding #2 — a realistic degraded-gateway failure mode)."""
+    fake = _patch_refresh_client(
+        monkeypatch,
+        [
+            (200, _catalog("model=glm-5.2&prov=ollama")),  # good fetch
+            (200, {"data": []}),  # empty-body 200 -> must fail open
+        ],
+    )
+
+    await mon.refresh()
+    mon._last_refresh = time.time() - 999  # TTL expired -> next re-hits
+    result = await mon.refresh()
+
+    assert set(result) == {"model=glm-5.2&prov=ollama"}
+    assert set(mon._gateway_models) == {"model=glm-5.2&prov=ollama"}
+    assert fake.calls[1] == (200, {"data": []})  # the empty 200 really happened
+    assert mon._last_refresh < time.time() - 900  # NOT stamped as a fresh success
+
+
+@pytest.mark.asyncio
+async def test_refresh_empty_200_never_sticks_empty_on_retry(monkeypatch, mon):
+    """Even with no prior catalog, an empty-body 200 is not cached-stuck: the
+    next refresh re-hits the endpoint rather than being served a 60s empty cache.
+    """
+    fake = _patch_refresh_client(
+        monkeypatch,
+        [
+            (200, {"data": []}),  # empty-body 200, no LKG yet
+            (200, _catalog("model=glm-5.2&prov=ollama")),  # recovery
+        ],
+    )
+
+    first = await mon.refresh()
+    assert first == {}
+
+    recovered = await mon.refresh()
+    assert set(recovered) == {"model=glm-5.2&prov=ollama"}
+    assert len(fake.calls) == 2  # both calls did real network work
+
+
+@pytest.mark.asyncio
 async def test_refresh_caches_success_for_ttl(monkeypatch, mon):
     """A SUCCESSFUL fetch stamps _last_refresh, so a follow-up within the TTL
     is served from cache (no re-hit). Confirms the cache still works on success."""
