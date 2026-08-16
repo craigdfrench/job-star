@@ -20,6 +20,7 @@ Usage:
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import time
@@ -37,6 +38,13 @@ DEFAULT_QUOTA_HOLD_SECONDS = 3 * 60 * 60  # 3 hours
 
 # Circuit breaker: after N consecutive failures, open the circuit
 DEFAULT_FAILURE_THRESHOLD = 3
+
+# Retry backoff for models that are unavailable for a NON-quota reason
+# (circuit open from consecutive failures, or an exhausted quota window with no
+# scheduled reset). There is no deterministic reset time for these, so this
+# positive "retry soon" value lets callers defer instead of incorrectly treating
+# the model as available-now (which is what a 0.0 return would claim).
+DEFAULT_UNKNOWN_WAIT_SECONDS = 300.0  # 5 minutes
 
 # Gatehouse config paths to read for actual model_costs metadata
 GATEHOUSE_CONFIG_PATHS = [
@@ -436,12 +444,31 @@ class GatewayMonitor:
             self._apply_x_gatehouse(model_id, x_gatehouse)
 
     def _apply_x_gatehouse(self, model_id: str, xg: dict) -> None:
-        """Parse x_gatehouse and update model state + quota holds."""
+        """Parse x_gatehouse and update model state + quota holds.
+
+        Observed ``cost_class`` / ``routing_advice`` / ``reason`` /
+        ``retail_value`` are only overwritten when this request actually reports
+        them, so an x_gatehouse payload that omits an attribute doesn't drop the
+        last-known-good value (cost_class in particular is a stable billing
+        property of a model, not a per-request signal). ``retail_value`` is
+        guarded against non-numeric values.
+        """
         s = self.state(model_id)
-        s.observed_cost_class = xg.get("cost_class")
-        s.observed_routing_advice = xg.get("routing_advice")
-        s.observed_reason = xg.get("reason")
-        s.observed_retail_value = float(xg.get("retail_value_this_request", 0.0) or 0.0)
+        cc = xg.get("cost_class")
+        if cc is not None:
+            s.observed_cost_class = cc
+        ra = xg.get("routing_advice")
+        if ra is not None:
+            s.observed_routing_advice = ra
+        rs = xg.get("reason")
+        if rs is not None:
+            s.observed_reason = rs
+        rv = xg.get("retail_value_this_request")
+        if rv is not None:
+            try:
+                s.observed_retail_value = float(rv)
+            except (TypeError, ValueError):
+                s.observed_retail_value = 0.0
 
         # Parse quota windows
         windows: list[QuotaWindow] = []
@@ -462,22 +489,25 @@ class GatewayMonitor:
                 continue
         s.observed_quota_windows = windows
 
-        # If any window is exhausted, enter quota hold until the earliest reset
+        # If any window is exhausted, enter quota hold until the LATEST reset.
+        # A model with several exhausted pools (e.g. daily + weekly) is unusable
+        # until ALL of them clear, so holding for the soonest reset would release
+        # it while another pool is still exhausted.
         exhausted = [w for w in windows if w.remaining_pct <= 0]
         if exhausted:
-            # Use the soonest reset time to compute hold duration
-            import datetime as _dt
-            soonest = None
+            latest = None
             for w in exhausted:
-                if w.resets_at:
-                    try:
-                        reset_dt = _dt.datetime.fromisoformat(w.resets_at.replace("Z", "+00:00"))
-                        if soonest is None or reset_dt < soonest:
-                            soonest = reset_dt
-                    except ValueError:
-                        continue
-            if soonest:
-                hold = (soonest - _dt.datetime.now(_dt.timezone.utc)).total_seconds()
+                if not w.resets_at:
+                    continue
+                try:
+                    reset_dt = datetime.datetime.fromisoformat(
+                        w.resets_at.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if latest is None or reset_dt > latest:
+                    latest = reset_dt
+            if latest:
+                hold = (latest - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
                 if hold > 0:
                     s.enter_quota_hold(hold)
                 else:
@@ -607,11 +637,43 @@ class GatewayMonitor:
         return results
 
     def time_until_available(self, model_id: str) -> float:
-        """Return seconds until a model is available again (0 if available now)."""
+        """Return seconds until a model is available again (0 if available now).
+
+        Considers every unavailable reason, not just an active quota hold:
+          - available now                 -> 0.0
+          - in quota hold                 -> time until the hold expires
+          - exhausted observed window has -> time until its (latest) reset
+            a scheduled reset
+          - circuit open / no scheduled   -> ``DEFAULT_UNKNOWN_WAIT_SECONDS``
+            reset                            so callers defer rather than treat
+                                            the model as available-now
+        """
         s = self.state(model_id)
         if s.is_available:
             return 0.0
-        return max(0.0, s.quota_hold_until - time.time())
+        if s.is_in_quota_hold:
+            return max(0.0, s.quota_hold_until - time.time())
+        # Exhausted observed window(s) with a future reset but no active hold.
+        exhausted = [w for w in s.observed_quota_windows if w.remaining_pct <= 0]
+        if exhausted:
+            latest_reset = None
+            for w in exhausted:
+                if not w.resets_at:
+                    continue
+                try:
+                    rd = datetime.datetime.fromisoformat(
+                        w.resets_at.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if rd.tzinfo is None:
+                    rd = rd.replace(tzinfo=datetime.timezone.utc)
+                ts = rd.timestamp()
+                if latest_reset is None or ts > latest_reset:
+                    latest_reset = ts
+            if latest_reset is not None and latest_reset > time.time():
+                return latest_reset - time.time()
+        # Circuit open / stale quota with no known reset time.
+        return DEFAULT_UNKNOWN_WAIT_SECONDS
 
     def pick_fallback(
         self,
@@ -663,7 +725,7 @@ class GatewayMonitor:
                 tier_score += 1000
 
             overlap = len(preferred_capabilities & set(caps.keys()))
-            context = model.get("context_length", 0)
+            context = model.get("context_length") or 0
             context_score = min(context / 100000, 5.0)
 
             # Prefer staying close to the original tier if possible
@@ -749,9 +811,22 @@ def _load_gatehouse_config() -> dict:
 
 
 def _get_cost_kind_from_config(model_id: str) -> CostKind:
-    """Look up the cost kind for a model from the gatehouse config."""
+    """Look up the cost kind for a model from the gatehouse config.
+
+    Normalizes model-spec ("model=NAME&prov=PROVIDER") and legacy ("prov/name")
+    forms so config entries keyed by the bare name still match, mirroring
+    tier()'s normalization. Without this, spec-form IDs (which start with
+    "model=") never match config keys and always fall through to UNKNOWN.
+    """
     _load_gatehouse_config()
-    return _gatehouse_cost_cache.get(model_id, CostKind.UNKNOWN)
+    name, _prov, legacy = _parse_model_spec(model_id)
+    for mid in (model_id, name, legacy):
+        if mid is None:
+            continue
+        kind = _gatehouse_cost_cache.get(mid)
+        if kind is not None:
+            return kind
+    return CostKind.UNKNOWN
 
 
 def _is_quota_error(error_str: str) -> bool:
