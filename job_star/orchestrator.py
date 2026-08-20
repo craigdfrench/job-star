@@ -222,9 +222,19 @@ Break this goal into concrete steps."""
             # All steps done?
             all_done = all(s.status == StepStatus.COMPLETED for s in steps)
             if all_done:
-                await update_goal_status(goal_id, GoalStatus.COMPLETED)
-                await audit("goal_completed", {}, goal_id)
-                return ExecutionResult(success=True, content="All steps completed! Goal marked complete.", model="none")
+                # Preserve a gate outcome (ci_pass/ci_fail/review_pass/
+                # review_block/review_error) set by a CI/review executor over
+                # the generic "completed" terminal state. The deploy gate
+                # queries job-star for ci_pass/review_pass; overwriting them
+                # here would strand the gate. Only fall back to COMPLETED
+                # when the goal isn't carrying a gate verdict.
+                gate = {GoalStatus.CI_PASS, GoalStatus.CI_FAIL,
+                        GoalStatus.REVIEW_PASS, GoalStatus.REVIEW_BLOCK,
+                        GoalStatus.REVIEW_ERROR}
+                if goal.status not in gate:
+                    await update_goal_status(goal_id, GoalStatus.COMPLETED)
+                    await audit("goal_completed", {}, goal_id)
+                return ExecutionResult(success=True, content="All steps completed!", model="none")
             return ExecutionResult(success=True, content="No pending steps", model="none")
 
         # Get previous step outputs for context
