@@ -104,7 +104,7 @@ PANEL_SUCCESS_STATUSES = {"complete", "completed", "done", "succeeded"}
 # §4.8 fixup re-review budgets: the BLOCK comment + fixup diff must fit one
 # adjudicator prompt. Truncation is explicit, never silent.
 BLOCK_COMMENT_MAX_CHARS = 16_000
-FIXUP_DIFF_MAX_CHARS = 30_000
+FIXUP_DIFF_MAX_CHARS = 60_000
 
 ADAPTER_TIMEOUT_S = 120
 SKILL_SUBPROCESS_TIMEOUT_S = 3600  # the skill polls its own jobs; give it room
@@ -201,8 +201,11 @@ FIXUP_REVIEW_PROMPT = (
     "addressing the BLOCK items. Your job is to confirm, per item, that the "
     "specified remediation was applied - nothing more. Do NOT re-review the "
     "whole PR. Do NOT re-derive the original findings.\n\n"
-    "HARD RULE: Output ONLY the adjudication described below. No preamble, "
-    "no thinking narration, no commentary about the task.\n\n"
+    "HARD RULE: Output ONLY the adjudication described below - the numbered "
+    "item list, one line per item, and the FIXUP VERDICT line. No preamble, "
+    "no thinking narration, no commentary about the task, no description of "
+    "how you are approaching the decision. Do NOT show your reasoning "
+    "process at all.\n\n"
     "Step 1: Enumerate the BLOCK items you can identify in the original "
     "review output below, numbering them 1..N. Quote each item's core "
     "concern in at most 20 words. If the original output lists its blocking "
@@ -254,6 +257,37 @@ def strip_reasoning_preamble(content: str) -> str:
         start = m2.start() if m2 else None
     if start:
         return content[start:].lstrip()
+    return content
+
+
+# The fixup adjudication's adjudication block: the numbered item list, the
+# per-item CONFIRMED/UNRESOLVED lines, and the FIXUP VERDICT line. Posted
+# PR comments keep only this block - the model's decision narration is
+# dropped deterministically (observed: the round-1 fixup adjudication leaked
+# its full chain-of-thought into the PR thread).
+_FIXUP_ITEMS_HDR = re.compile(
+    r"(?im)^\s*(?:#{0,3}\s*)?(?:\*\*)?(?:BLOCK\s+)?[Ii]tems?\s*[:\-]?\s*[:)]?"
+)
+_FIXUP_PER_ITEM = re.compile(r"(?im)^\s*\*{0,2}(CONFIRMED|UNRESOLVED)\b")
+_FIXUP_NUMBERED = re.compile(r"(?im)^\s*\*{0,2}1[.:)]\s")
+
+
+def strip_fixup_narration(content: str) -> str:
+    """Keep only the adjudication block of a fixup re-review output.
+
+    The block starts at the item enumeration (a 'Items:' heading, the first
+    per-item CONFIRMED/UNRESOLVED line, or the first numbered item). If no
+    block start is found, return the content unchanged (the per-item parser
+    scans the whole text, so an unstripped adjudication still parses)."""
+    if not content:
+        return content
+    best = None
+    for pat in (_FIXUP_PER_ITEM, _FIXUP_ITEMS_HDR, _FIXUP_NUMBERED):
+        m = pat.search(content)
+        if m:
+            best = m.start() if best is None else min(best, m.start())
+    if best is not None:
+        return content[best:].lstrip()
     return content
 
 
@@ -1283,7 +1317,12 @@ class ReviewExecutor(Executor):
 
         # Deterministic #133 fix: whatever the model emitted, the posted body
         # starts at the report's first section - never at thinking narration.
-        body = strip_reasoning_preamble(aggregated) or "_No aggregated report was produced._"
+        # The fixup shape has its own strip (its block is the item list, not
+        # 'Camp breakdown').
+        if fixup:
+            body = strip_fixup_narration(aggregated) or "_No adjudication was produced._"
+        else:
+            body = strip_reasoning_preamble(aggregated) or "_No aggregated report was produced._"
         if reviewed_sha:
             body = f"_Reviewed head: {reviewed_sha}_\n\n{body}"
         # Keep the comment within gh/GitHub's comfortable body size.

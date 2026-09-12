@@ -233,3 +233,69 @@ def test_fixup_review_prompt_contract():
     assert "- fixup: x" in prompt
     assert "+ diff lines" in prompt
     assert "aaa..bbb" in prompt
+
+# --------------------------------------------------------------------------- #
+# strip_fixup_narration (round-2: the fixup adjudication must not leak its
+# chain-of-thought into the PR thread either)
+# --------------------------------------------------------------------------- #
+
+def test_strip_fixup_narration_item_heading():
+    from job_star.executors.review import strip_fixup_narration
+    content = (
+        "I'm going through the original review to pin down the BLOCK items. "
+        "Weighing which list to use... reasoning...\n\n"
+        "**BLOCK items**\n"
+        "1. MatchesModel false-equivalence\n"
+        "CONFIRMED - item 1: dispatch code cited\n"
+        "FIXUP VERDICT: CONDITIONAL_PASS"
+    )
+    out = strip_fixup_narration(content)
+    assert out.startswith("**BLOCK items**"), out[:80]
+    assert "pin down" not in out
+    assert "FIXUP VERDICT: CONDITIONAL_PASS" in out
+
+
+def test_strip_fixup_narration_per_item_first():
+    from job_star.executors.review import strip_fixup_narration
+    content = (
+        "Long narration about deciding which enumeration to anchor on.\n\n"
+        "CONFIRMED - item 1: applied in the fixup diff\n"
+        "UNRESOLVED - item 2: no estimated flag in output\n"
+        "FIXUP VERDICT: STILL_BLOCKED (unresolved items: 2)"
+    )
+    out = strip_fixup_narration(content)
+    assert out.startswith("CONFIRMED - item 1"), out[:80]
+    assert "narration" not in out
+    assert "UNRESOLVED - item 2" in out
+
+
+def test_strip_fixup_narration_noop_when_no_block():
+    from job_star.executors.review import strip_fixup_narration
+    assert strip_fixup_narration("") == ""
+    content = "no block markers VERDICT-ish text"
+    assert strip_fixup_narration(content) == content
+
+
+def test_fixup_comment_uses_fixup_strip():
+    # A fixup comment must keep only the adjudication block, not the model's
+    # decision narration (observed leaking in round 1).
+    body = ReviewExecutor._build_pr_comment(
+        "BLOCK", "item 2 unresolved",
+        "I'm settling on the minimum-to-clear list as the anchor...\n\n"
+        "**BLOCK items**\n"
+        "CONFIRMED - item 1: ok\n"
+        "UNRESOLVED - item 2: missing\n"
+        "FIXUP VERDICT: STILL_BLOCKED (unresolved items: 2)",
+        fixup=True,
+    )
+    assert "settling on" not in body
+    assert "CONFIRMED - item 1: ok" in body
+    assert "STILL_BLOCKED" in body
+
+
+def test_fixup_diff_budget_covers_large_fixups():
+    # Round-1 adjudication could not see the WithBatchRouting deep-copy code
+    # because the diff truncated at 30k chars. The budget must accommodate
+    # realistic multi-commit fixups.
+    from job_star.executors import review as review_mod
+    assert review_mod.FIXUP_DIFF_MAX_CHARS >= 60_000
