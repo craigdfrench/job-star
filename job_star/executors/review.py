@@ -101,6 +101,11 @@ TERMINAL_STATUSES = {
 # perplexity-rot incident was exactly this hollow PASS).
 PANEL_SUCCESS_STATUSES = {"complete", "completed", "done", "succeeded"}
 
+# §4.8 fixup re-review budgets: the BLOCK comment + fixup diff must fit one
+# adjudicator prompt. Truncation is explicit, never silent.
+BLOCK_COMMENT_MAX_CHARS = 16_000
+FIXUP_DIFF_MAX_CHARS = 30_000
+
 ADAPTER_TIMEOUT_S = 120
 SKILL_SUBPROCESS_TIMEOUT_S = 3600  # the skill polls its own jobs; give it room
 GIT_TIMEOUT_S = 60
@@ -131,19 +136,29 @@ _HEXADECIMAL = set("0123456789abcdefABCDEF")
 
 AGGREGATOR_PROMPT_PUBLIC = (
     "You are the aggregator for an intense multi-model review. Synthesize the "
-    "per-model verdicts and web verification into a consensus + dissent report.\n\n"
+    "per-model verdicts into a consensus + dissent report.\n\n"
+    "HARD RULE: Output ONLY the report sections in the specified shape below. "
+    "No preamble, no thinking narration, no commentary about the task, no "
+    "description of what you are about to do. The report must start with the "
+    "first section heading directly.\n\n"
     "Structure your output as:\n"
     "1. **Camp breakdown** — which models agreed, which disagreed, which were "
     "partial. Use a table.\n"
     "2. **Key objections** — the strongest objections raised, with which models "
     "raised them.\n"
-    "3. **Web verification** — what the verifier confirmed or refuted, with "
-    "citations. Which claims are now factually settled vs. still open.\n"
-    "4. **Resolved vs. standing** — which objections were resolved by evidence or "
-    "verification, which still stand.\n"
+    "3. **Web verification** — if the panel included a verifier model, what it "
+    "confirmed or refuted. If no verifier was available, write "
+    "\"(none available - ground truth from model knowledge only)\" and skip "
+    "the section. Do not discuss the absence.\n"
+    "4. **Resolved vs. standing** — which objections were resolved by evidence "
+    "or verification, which still stand.\n"
     "5. **Overall verdict** — is the hypothesis well-supported enough to act on, "
     "or does it need more proof? Be honest about residual uncertainty.\n\n"
-    "Do NOT show your reasoning process. Output only the final report.\n\n"
+    "The very last line of your output must be exactly:\n"
+    "VERDICT: PASS\n"
+    "or\n"
+    "VERDICT: BLOCK (reasons: <one sentence summary of the blocking finding>)\n"
+    "No other text after the VERDICT line.\n\n"
     "Findings under review:\n{findings}\n\n"
     "Per-model verdicts:\n{verdicts}"
 )
@@ -151,6 +166,10 @@ AGGREGATOR_PROMPT_PUBLIC = (
 AGGREGATOR_PROMPT_PRIVATE = (
     "You are the aggregator for an intense multi-model review. Synthesize the "
     "per-model verdicts into a consensus + dissent report.\n\n"
+    "HARD RULE: Output ONLY the report sections in the specified shape below. "
+    "No preamble, no thinking narration, no commentary about the task, no "
+    "description of what you are about to do. The report must start with the "
+    "first section heading directly.\n\n"
     "Structure your output as:\n"
     "1. **Camp breakdown** — which models agreed, which disagreed, which were "
     "partial. Use a table.\n"
@@ -160,10 +179,83 @@ AGGREGATOR_PROMPT_PRIVATE = (
     "which still stand.\n"
     "4. **Overall verdict** — is the hypothesis well-supported enough to act on, "
     "or does it need more proof? Be honest about residual uncertainty.\n\n"
-    "Do NOT show your reasoning process. Output only the final report.\n\n"
+    "The very last line of your output must be exactly:\n"
+    "VERDICT: PASS\n"
+    "or\n"
+    "VERDICT: BLOCK (reasons: <one sentence summary of the blocking finding>)\n"
+    "No other text after the VERDICT line.\n\n"
     "Findings under review:\n{findings}\n\n"
     "Per-model verdicts:\n{verdicts}"
 )
+
+# §4.8 fixup re-review prompt: a single adjudicator (the same model class the
+# original panel trusted for the final verdict) receives the BLOCK items from
+# the original review (verbatim, from the PR thread) plus the fixup diff ONLY
+# (not the full PR diff), and answers CONFIRMED/UNRESOLVED per item. Full
+# panel re-run is explicitly wrong for fixups - the panel already adjudicated
+# the findings; re-deriving them gains nothing (workflow spec §4.8).
+FIXUP_REVIEW_PROMPT = (
+    "You are the single adjudicator for a review-gate fixup re-review "
+    "(development-workflow-specification.md 4.8). An earlier review panel "
+    "returned VERDICT: BLOCK on this PR. The author has pushed fixup commits "
+    "addressing the BLOCK items. Your job is to confirm, per item, that the "
+    "specified remediation was applied - nothing more. Do NOT re-review the "
+    "whole PR. Do NOT re-derive the original findings.\n\n"
+    "HARD RULE: Output ONLY the adjudication described below. No preamble, "
+    "no thinking narration, no commentary about the task.\n\n"
+    "Step 1: Enumerate the BLOCK items you can identify in the original "
+    "review output below, numbering them 1..N. Quote each item's core "
+    "concern in at most 20 words. If the original output lists its blocking "
+    "items explicitly (e.g. a numbered \"Blocking concerns\" list), use those "
+    "verbatim as the item list.\n\n"
+    "Step 2: For EACH item, output EXACTLY one line of one of these forms:\n"
+    "CONFIRMED - item <n>: <one sentence citing the evidence from the fixup "
+    "diff that shows the remediation applied>\n"
+    "UNRESOLVED - item <n>: <one sentence stating what remains missing>\n\n"
+    "Step 3: Your very last line must be EXACTLY one of:\n"
+    "FIXUP VERDICT: CONDITIONAL_PASS\n"
+    "or\n"
+    "FIXUP VERDICT: STILL_BLOCKED (unresolved items: <comma-separated item "
+    "numbers>)\n\n"
+    "Judging contract: an item is CONFIRMED only when the fixup diff below "
+    "shows the specified remediation (or the item was factually incorrect and "
+    "the fixup diff disproves it - then say so in your evidence sentence). "
+    "An item you cannot verify from the material below is UNRESOLVED. Do not "
+    "guess.\n\n"
+    "Original review's BLOCK output (verbatim, from the PR thread):\n{block}\n\n"
+    "Fixup commits ({rng}):\n{log}\n\n"
+    "Fixup diff (verbatim):\n{diff}"
+)
+
+# Deterministic #133 companion (gatehouse-ai): the aggregator is prompted with
+# a hard no-preamble rule, but models sometimes emit thinking narration anyway
+# (observed on claude-opus-4-8-max across PR #138 review rounds 1-3). The
+# skill strips at write time; the executor strips again before posting so the
+# PR thread never shows pre-report narration regardless of model compliance.
+_CAMP_SECTION = re.compile(
+    r"(?im)^\s*(?:#{1,3}\s*)?(?:\*\*)?(?:\d+[.)]\s*)?(?:\*\*)?\s*camp\s+breakdown"
+)
+_MD_HEADING = re.compile(r"(?m)^#{1,3}\s+\S")
+
+
+def strip_reasoning_preamble(content: str) -> str:
+    """Drop reasoning narration before the report's first required section.
+
+    The report starts at its 'Camp breakdown' section (heading, numbered, or
+    bold variants). Everything before it is narration. Never touch anything
+    after. No section start found -> return unchanged (the VERDICT parser
+    scans the whole text, so a mangled report is still parseable)."""
+    if not content:
+        return content
+    m = _CAMP_SECTION.search(content)
+    start = m.start() if m else None
+    if start is None:
+        m2 = _MD_HEADING.search(content)
+        start = m2.start() if m2 else None
+    if start:
+        return content[start:].lstrip()
+    return content
+
 
 # Forces a machine-parseable verdict line on retry. §4.5 contract.
 VERDICT_SUFFIX = (
@@ -246,6 +338,17 @@ class ReviewExecutor(Executor):
         adapter_worktree = ""
         out_dir = ""
         try:
+            # --- §4.8: fixup re-review branch ---------------------------------
+            # A re-review goal carries metadata.re_review_of = <original
+            # review goal id> whose verdict was BLOCK. It runs a single
+            # adjudicator over the BLOCK list + the fixup diff ONLY - never a
+            # full panel re-run (workflow spec §4.8).
+            re_review_of = (meta.get("re_review_of") or "").strip()
+            if re_review_of:
+                return await self._execute_fixup_review(
+                    goal, state, meta, repo_url, ref, str(pr_number),
+                )
+
             # --- validate ----------------------------------------------------
             if not ref or not repo:
                 return await self._finish(
@@ -276,6 +379,10 @@ class ReviewExecutor(Executor):
                 return await self._finish(
                     goal, state, GoalStatus.REVIEW_ERROR, error=err,
                 )
+            # The sha this review adjudicated. Recorded so a later §4.8 fixup
+            # re-review can compute its fixup diff as reviewed_sha..head
+            # without guessing which commits the panel saw.
+            state["reviewed_sha"] = self._resolve_ref(repo_url, ref) or ""
 
             adapter_worktree = self._make_workdir(goal, "adapter")
             ok, err = self._prepare_adapter_worktree(adapter_worktree)
@@ -444,6 +551,262 @@ class ReviewExecutor(Executor):
         if not os.path.exists(os.path.join(work_dir, ADAPTER_PATH_IN_REPO)):
             return False, f"review: {ADAPTER_PATH_IN_REPO} not found in gatehouse-ai clone"
         return True, ""
+
+    # ====================================================================== #
+    # §4.8 — fixup re-review (single adjudicator, BLOCK list + fixup diff)
+    # ====================================================================== #
+
+    async def _execute_fixup_review(
+        self,
+        goal: Goal,
+        state: dict[str, Any],
+        meta: dict[str, Any],
+        repo_url: str,
+        ref: str,
+        pr_number: str,
+    ) -> ExecutionResult:
+        """Single-adjudicator re-review after a BLOCK (workflow spec §4.8).
+
+        Inputs: the ORIGINAL review's BLOCK output (verbatim, latest
+        '## Review Gate: VERDICT: BLOCK' PR comment) + the fixup diff
+        (fixup_base..current head). Output: CONFIRMED/UNRESOLVED per BLOCK
+        item; all CONFIRMED -> REVIEW_PASS (conditional pass per §4.8 step 4),
+        any UNRESOLVED -> REVIEW_BLOCK. Never a full panel re-run.
+        """
+        state["fixup"] = True
+        state["re_review_of"] = (meta.get("re_review_of") or "").strip()
+        if not ref or not repo_url or not pr_number:
+            return await self._finish(
+                goal, state, GoalStatus.REVIEW_ERROR,
+                error="fixup re-review: requires metadata.ref, metadata.repo and a PR number",
+            )
+
+        target_worktree = self._make_workdir(goal, "target")
+        state["target_worktree"] = target_worktree
+        ok, err = self._prepare_target_worktree(repo_url, ref, target_worktree)
+        if not ok:
+            return await self._finish(goal, state, GoalStatus.REVIEW_ERROR, error=err)
+        head_sha = self._resolve_ref(repo_url, ref) or ""
+        state["reviewed_sha"] = head_sha
+
+        # --- BLOCK output: the latest BLOCK comment on the PR thread --------
+        block_comment, block_err = self._latest_block_comment(
+            target_worktree, pr_number,
+        )
+        if not block_comment:
+            return await self._finish(
+                goal, state, GoalStatus.REVIEW_ERROR,
+                error=f"fixup re-review: no BLOCK comment found to adjudicate against: {block_err}",
+            )
+        state["block_comment_chars"] = len(block_comment)
+
+        # --- fixup base: explicit metadata > 'Reviewed head:' in the comment -
+        fixup_base = (meta.get("fixup_base") or "").strip()
+        if not fixup_base:
+            fixup_base = self._fixup_base_from_comment(block_comment)
+        if not fixup_base:
+            return await self._finish(
+                goal, state, GoalStatus.REVIEW_ERROR,
+                error="fixup re-review: cannot resolve the original review's "
+                      "head sha (no metadata.fixup_base and the BLOCK comment "
+                      "predates 'Reviewed head:' recording). Re-submit with "
+                      "metadata.fixup_base = <sha the BLOCK review ran on>.",
+            )
+        base_sha = fixup_base if set(fixup_base) <= _HEXADECIMAL else (
+            self._resolve_ref(repo_url, fixup_base) or ""
+        )
+        if not base_sha:
+            return await self._finish(
+                goal, state, GoalStatus.REVIEW_ERROR,
+                error=f"fixup re-review: could not resolve fixup base {fixup_base!r}",
+            )
+        self._git(["fetch", "origin", base_sha], target_worktree)
+        state["fixup_range"] = f"{base_sha[:12]}..{head_sha[:12] if head_sha else 'HEAD'}"
+
+        log_res = self._git(["log", "--oneline", f"{base_sha}..HEAD"], target_worktree)
+        fixup_log = (log_res.stdout or "").strip()[:3000]
+        diff_res = self._git(["diff", f"{base_sha}..HEAD"], target_worktree)
+        fixup_diff = (diff_res.stdout or "").strip()
+        if not fixup_diff:
+            return await self._finish(
+                goal, state, GoalStatus.REVIEW_ERROR,
+                error=f"fixup re-review: empty fixup diff for {state['fixup_range']} "
+                      "- push the fixup commit(s) before re-submitting",
+            )
+        if len(fixup_diff) > FIXUP_DIFF_MAX_CHARS:
+            fixup_diff = fixup_diff[:FIXUP_DIFF_MAX_CHARS] + "\n...[fixup diff truncated]"
+
+        # --- adjudicator model: the preset's aggregator ----------------------
+        sensitivity = (meta.get("sensitivity") or "public").strip().lower()
+        preset_name = (meta.get("preset") or "").strip()
+        agg_model = (meta.get("agg_model") or "").strip()
+        if not agg_model and preset_name:
+            agg_model = self._preset_aggregator_model(sensitivity, preset_name) or ""
+        if not agg_model:
+            return await self._finish(
+                goal, state, GoalStatus.REVIEW_ERROR,
+                error="fixup re-review: no adjudicator model (set metadata.preset "
+                      "or metadata.agg_model)",
+            )
+
+        cfg = self._read_gatehouse_ci_config(target_worktree)
+        prompt = FIXUP_REVIEW_PROMPT.format(
+            block=block_comment[:BLOCK_COMMENT_MAX_CHARS], rng=state["fixup_range"],
+            log=fixup_log or "(none)", diff=fixup_diff,
+        )
+
+        # --- submit the single adjudicator job, retry on real failure --------
+        for attempt in range(1, cfg["max_retries"] + 1):
+            messages = [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content":
+                    "Adjudicate the BLOCK items against the fixup diff now, "
+                    "ending with the FIXUP VERDICT line."},
+            ]
+            try:
+                resp = self._submit_job(agg_model, messages, cfg["aggregator_max_tokens"])
+                job_id = resp.get("job_id") or resp.get("id")
+            except Exception as e:
+                state["retries"].append({
+                    "attempt": attempt, "status": "submit_failed",
+                    "error": f"{type(e).__name__}: {e}",
+                })
+                continue
+            if not job_id:
+                state["retries"].append({
+                    "attempt": attempt, "status": "submit_failed",
+                    "error": f"no job_id in response: {str(resp)[:200]}",
+                })
+                continue
+            job = self._poll_job(job_id, self._retry_poll_timeout())
+            content = self._extract_content(job or {}) if job else ""
+            rec = {
+                "attempt": attempt, "job_id": job_id,
+                "status": (job or {}).get("status", "unknown"), "model": agg_model,
+            }
+            state["retries"].append(rec)
+            if not content or content.startswith("[failed"):
+                rec["error"] = content[:200] if content else "empty response"
+                continue
+            state["aggregated"] = content
+            state["aggregator_job_id"] = job_id
+            state["aggregator_status"] = (job or {}).get("status", "")
+            items, fixup_verdict, unresolved = self._parse_fixup_adjudication(content)
+            state["fixup_items"] = items
+            state["fixup_unresolved"] = unresolved
+            if fixup_verdict is None:
+                rec["error"] = "no parseable FIXUP VERDICT line"
+                continue
+            if fixup_verdict == "CONDITIONAL_PASS" and items and not unresolved:
+                state["verdict"] = "PASS"
+                state["verdict_reason"] = (
+                    "conditional pass (§4.8): all BLOCK items CONFIRMED by the "
+                    "single adjudicator against the fixup diff "
+                    f"({state['fixup_range']})"
+                )
+                return await self._finish(goal, state, GoalStatus.REVIEW_PASS)
+            state["verdict"] = "BLOCK"
+            state["verdict_reason"] = (
+                f"fixup re-review: {len(unresolved)} BLOCK item(s) UNRESOLVED "
+                + (f"({', '.join(str(i) for i in unresolved)})" if unresolved else "(adjudicator said STILL_BLOCKED)")
+            )
+            return await self._finish(goal, state, GoalStatus.REVIEW_BLOCK)
+
+        state["verdict"] = None
+        state["verdict_reason"] = "fixup adjudicator never produced a parseable per-item verdict"
+        return await self._finish(goal, state, GoalStatus.REVIEW_ERROR)
+
+    def _latest_block_comment(
+        self, target_worktree: str, pr_number: str,
+    ) -> tuple[str, str]:
+        """The latest '## Review Gate: VERDICT: BLOCK' comment body on the PR.
+
+        The BLOCK items the fixup cycle adjudicates against are the ones the
+        original panel posted to the PR thread (workflow spec §4.8 step 1).
+        Outbound-only gh call; run inside the target worktree so gh resolves
+        the repo from the checkout's remote.
+        """
+        cmd = ["gh", "pr", "view", str(pr_number), "--json", "comments"]
+        try:
+            proc = subprocess.run(
+                cmd, cwd=target_worktree, capture_output=True, text=True, timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            return "", "gh pr view timed out"
+        if proc.returncode != 0:
+            return "", f"gh pr view exit {proc.returncode}: {(proc.stderr or '').strip()[:200]}"
+        try:
+            comments = json.loads(proc.stdout or "{}").get("comments", [])
+        except json.JSONDecodeError:
+            return "", "could not parse gh pr view comments JSON"
+        for c in reversed(comments):
+            body = c.get("body") or ""
+            if body.lstrip().startswith("## Review Gate: VERDICT: BLOCK"):
+                return body, ""
+        return "", "no BLOCK comment on the PR thread"
+
+    @staticmethod
+    def _fixup_base_from_comment(block_comment: str) -> str:
+        """Parse 'Reviewed head: <sha>' from a BLOCK comment (the sha the
+        original review adjudicated). Empty when the comment predates the
+        recording (legacy reviews need metadata.fixup_base)."""
+        # The comment writes the sha as markdown italic: _Reviewed head: <sha>_
+        # so tolerate the wrapping underscores on both sides.
+        m = re.search(r"(?im)^_?\s*Reviewed head:\s*([0-9a-f]{7,40})_?\s*$", block_comment or "")
+        return m.group(1) if m else ""
+
+    def _preset_aggregator_model(self, sensitivity: str, preset_name: str) -> str:
+        """The aggregator model for a preset (the single adjudicator is the
+        same model class the original panel trusted for its final verdict)."""
+        skill_dir = (
+            "intense-private-review" if sensitivity == "private"
+            else "intense-public-review"
+        )
+        presets_path = os.path.join(SKILLS_ROOT, skill_dir, "presets.json")
+        try:
+            with open(presets_path) as f:
+                presets = json.load(f)
+            agg = (presets.get(preset_name) or {}).get("aggregator") or {}
+            return agg.get("model") or ""
+        except (OSError, json.JSONDecodeError):
+            return ""
+
+    @staticmethod
+    def _parse_fixup_adjudication(text: str):
+        """Parse the per-item CONFIRMED/UNRESOLVED lines + the final
+        FIXUP VERDICT line.
+
+        Returns (items, fixup_verdict, unresolved):
+          items         - list of {n, status, evidence} in adjudication order
+          fixup_verdict - 'CONDITIONAL_PASS' | 'STILL_BLOCKED' | None
+          unresolved    - list of UNRESOLVED item numbers
+        """
+        if not text:
+            return [], None, []
+        items: list[dict[str, Any]] = []
+        unresolved: list[int] = []
+        line_re = re.compile(
+            r"(?im)^\s*\*{0,2}(CONFIRMED|UNRESOLVED)\*{0,2}\s*[-:]\s*"
+            r"(?:item\s*)?(\d+)\s*[:.]?\s*(.*)$"
+        )
+        for m in line_re.finditer(text):
+            status, n, evidence = m.group(1).upper(), int(m.group(2)), m.group(3).strip()
+            items.append({"n": n, "status": status, "evidence": evidence[:300]})
+            if status == "UNRESOLVED":
+                unresolved.append(n)
+        vm = re.search(r"(?im)^\s*FIXUP\s+VERDICT\s*:\s*"
+                       r"(CONDITIONAL_PASS|STILL_BLOCKED)", text)
+        fixup_verdict = vm.group(1).upper() if vm else None
+        # Cross-check: a CONDITIONAL_PASS line with UNRESOLVED items is a
+        # contradiction; trust the per-item lines over the summary line.
+        if fixup_verdict == "CONDITIONAL_PASS" and unresolved:
+            fixup_verdict = "STILL_BLOCKED"
+        if fixup_verdict == "STILL_BLOCKED" and items and not unresolved:
+            # Pull unresolved item numbers the adjudicator named on the verdict
+            # line when it forgot the per-item UNRESOLVED lines.
+            tail = text[vm.end():]
+            unresolved = [int(x) for x in re.findall(r"\b(\d+)\b", tail[:200])]
+        return items, fixup_verdict, unresolved
 
     def _resolve_ref(self, repo: str, ref: str) -> Optional[str]:
         """Resolve a ref to a SHA via `git ls-remote` (no clone needed)."""
@@ -702,7 +1065,9 @@ class ReviewExecutor(Executor):
 
             if content and not content.startswith("[failed"):
                 # Rewrite aggregated.md with the retry's report and re-parse.
-                state["aggregated"] = content
+                # Strip reasoning narration (#133): models sometimes open
+                # with thinking despite the hard rule in the prompt.
+                state["aggregated"] = strip_reasoning_preamble(content)
                 verdict, reason = self._parse_verdict(content)
                 retry_rec["verdict"] = verdict
                 retry_rec["reason"] = reason or ""
@@ -863,6 +1228,7 @@ class ReviewExecutor(Executor):
     def _post_pr_comment(
         self, target_worktree: Optional[str], repo: str, pr_number: str,
         verdict: Optional[str], reason: str, aggregated: str,
+        reviewed_sha: str = "", fixup: bool = False,
     ) -> tuple[bool, str]:
         """Post the adjudicator-screened report + verdict to the PR thread.
 
@@ -871,7 +1237,8 @@ class ReviewExecutor(Executor):
         """
         if not pr_number:
             return False, "no PR number"
-        body = self._build_pr_comment(verdict, reason, aggregated)
+        body = self._build_pr_comment(verdict, reason, aggregated,
+                                      reviewed_sha=reviewed_sha, fixup=fixup)
         repo_arg = self._owner_repo_for_gh(repo)
         cmd = ["gh", "pr", "comment", str(pr_number), "--body", body]
         if repo_arg:
@@ -897,15 +1264,28 @@ class ReviewExecutor(Executor):
     @staticmethod
     def _build_pr_comment(
         verdict: Optional[str], reason: str, aggregated: str,
+        reviewed_sha: str = "", fixup: bool = False,
     ) -> str:
-        if verdict == "PASS":
+        if fixup:
+            label = "Fixup re-review (single adjudicator, \u00a74.8)"
+            if verdict == "PASS":
+                head = f"## Review Gate: {label} - VERDICT: CONDITIONAL_PASS"
+            elif verdict == "BLOCK":
+                head = f"## Review Gate: {label} - VERDICT: STILL_BLOCKED\n\n**Unresolved:** {reason or 'see adjudication below'}"
+            else:
+                head = f"## Review Gate: {label} - VERDICT: ERROR (no parseable adjudication)"
+        elif verdict == "PASS":
             head = "## Review Gate: VERDICT: PASS"
         elif verdict == "BLOCK":
             head = f"## Review Gate: VERDICT: BLOCK\n\n**Blocking concerns:** {reason or 'see report below'}"
         else:
             head = "## Review Gate: VERDICT: ERROR (no parseable verdict)"
 
-        body = aggregated or "_No aggregated report was produced._"
+        # Deterministic #133 fix: whatever the model emitted, the posted body
+        # starts at the report's first section - never at thinking narration.
+        body = strip_reasoning_preamble(aggregated) or "_No aggregated report was produced._"
+        if reviewed_sha:
+            body = f"_Reviewed head: {reviewed_sha}_\n\n{body}"
         # Keep the comment within gh/GitHub's comfortable body size.
         if len(body) > PR_COMMENT_MAX_BYTES:
             body = body[:PR_COMMENT_MAX_BYTES] + "\n\n…_(aggregated report truncated)_"
@@ -935,6 +1315,8 @@ class ReviewExecutor(Executor):
                 pr_ok, pr_msg = self._post_pr_comment(
                     state.get("target_worktree"), repo, state["pr"], verdict,
                     state.get("verdict_reason", ""), state.get("aggregated", ""),
+                    reviewed_sha=state.get("reviewed_sha", ""),
+                    fixup=state.get("fixup", False),
                 )
             except Exception as e:
                 pr_ok, pr_msg = False, f"{type(e).__name__}: {e}"
@@ -984,10 +1366,14 @@ class ReviewExecutor(Executor):
             "panel_job_ids": state.get("panel_job_ids", []),
             "aggregator_job_id": state.get("aggregator_job_id", ""),
             "aggregator_status": state.get("aggregator_status", ""),
+            "reviewed_sha": state.get("reviewed_sha", ""),
             "retry_count": len(state.get("retries", [])),
             "pr_comment_posted": pr_ok,
             "pr_comment_note": pr_msg[:200] if not pr_ok else "",
         }
+        if state.get("fixup"):
+            result_payload["re_review_of"] = state.get("re_review_of", "")
+            result_payload["fixup_range"] = state.get("fixup_range", "")
         artifacts.append(Artifact(
             kind="review_result", value=json.dumps(result_payload, ensure_ascii=False),
             repo=repo,
@@ -1019,6 +1405,19 @@ class ReviewExecutor(Executor):
             kind="review_aggregated", value=aggregated, repo=repo,
         ))
 
+        # §4.8 fixup_review: the single adjudicator's per-item adjudication.
+        if state.get("fixup"):
+            artifacts.append(Artifact(
+                kind="fixup_review",
+                value=json.dumps({
+                    "re_review_of": state.get("re_review_of", ""),
+                    "fixup_range": state.get("fixup_range", ""),
+                    "items": state.get("fixup_items", []),
+                    "unresolved": state.get("fixup_unresolved", []),
+                }, ensure_ascii=False),
+                repo=repo,
+            ))
+
         # §4.7: one artifact per aggregator retry attempt.
         for rec in state.get("retries", []):
             artifacts.append(Artifact(
@@ -1038,10 +1437,16 @@ class ReviewExecutor(Executor):
         parts = [
             f"{goal_status.value}: verdict={verdict}",
             f"preset={state.get('preset','')} sensitivity={state.get('sensitivity','')}",
-            f"panel_jobs={len(state.get('panel_job_ids', []))} "
-            f"aggregator={state.get('aggregator_job_id','') or '-'}",
-            f"retries={len(state.get('retries', []))}",
         ]
+        if state.get("fixup"):
+            parts.append(f"fixup re-review of goal {state.get('re_review_of','')}")
+            parts.append(f"fixup_range={state.get('fixup_range','')} "
+                         f"items={len(state.get('fixup_items', []))} "
+                         f"unresolved={state.get('fixup_unresolved', [])}")
+        else:
+            parts.append(f"panel_jobs={len(state.get('panel_job_ids', []))} "
+                         f"aggregator={state.get('aggregator_job_id','') or '-'}")
+        parts.append(f"retries={len(state.get('retries', []))}")
         if state.get("verdict_reason"):
             parts.append(f"reason: {state['verdict_reason']}")
         parts.append(f"pr_comment: {'posted' if pr_ok else 'failed: ' + pr_msg[:120]}")
