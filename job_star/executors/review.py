@@ -775,7 +775,15 @@ class ReviewExecutor(Executor):
             return "", "could not parse gh pr view comments JSON"
         for c in reversed(comments):
             body = c.get("body") or ""
-            if body.lstrip().startswith("## Review Gate: VERDICT: BLOCK"):
+            head = body.lstrip()[:120]
+            # A fixup cycle iterates: the latest standing BLOCK is either the
+            # original panel verdict (VERDICT: BLOCK) or a prior fixup
+            # adjudication (VERDICT: STILL_BLOCKED) - both are the BLOCK list
+            # the next round adjudicates against.
+            if head.startswith("## Review Gate: VERDICT: BLOCK") or (
+                head.startswith("## Review Gate:")
+                and "VERDICT: STILL_BLOCKED" in head
+            ):
                 return body, ""
         return "", "no BLOCK comment on the PR thread"
 

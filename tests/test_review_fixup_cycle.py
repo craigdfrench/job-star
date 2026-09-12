@@ -299,3 +299,30 @@ def test_fixup_diff_budget_covers_large_fixups():
     # realistic multi-commit fixups.
     from job_star.executors import review as review_mod
     assert review_mod.FIXUP_DIFF_MAX_CHARS >= 60_000
+
+
+def test_latest_block_comment_matches_fixup_still_blocked(monkeypatch, tmp_path):
+    # A fixup cycle iterates: round 2 must adjudicate against the round-1
+    # fixup adjudication (STILL_BLOCKED), not the older full-panel BLOCK.
+    import subprocess as sp
+
+    def fake_run(cmd, cwd=None, capture_output=False, text=False, timeout=None):
+        class R:
+            returncode = 0
+            stdout = (
+                '{"comments": ['
+                '{"body": "## Review Gate: VERDICT: BLOCK\\n\\n**Blocking concerns:** old"},'
+                '{"body": "Some unrelated comment"},'
+                '{"body": "## Review Gate: Fixup re-review (single adjudicator) - '
+                'VERDICT: STILL_BLOCKED\\n\\n**Unresolved:** items 2,3,4"}'
+                "]}"
+            )
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    ex = ReviewExecutor()
+    body, err = ex._latest_block_comment("/tmp/wt", "138")
+    assert body.startswith("## Review Gate: Fixup re-review"), body[:80]
+    assert "STILL_BLOCKED" in body
+    assert err == ""
