@@ -265,24 +265,29 @@ def strip_reasoning_preamble(content: str) -> str:
 # PR comments keep only this block - the model's decision narration is
 # dropped deterministically (observed: the round-1 fixup adjudication leaked
 # its full chain-of-thought into the PR thread).
-_FIXUP_ITEMS_HDR = re.compile(
-    r"(?im)^\s*(?:#{0,3}\s*)?(?:\*\*)?(?:BLOCK\s+)?[Ii]tems?\s*[:\-]?\s*[:)]?"
-)
 _FIXUP_PER_ITEM = re.compile(r"(?im)^\s*\*{0,2}(CONFIRMED|UNRESOLVED)\b")
-_FIXUP_NUMBERED = re.compile(r"(?im)^\s*\*{0,2}1[.:)]\s")
+# A numbered adjudication line ("1. <concern>" / "3. ..."). Any leading digit
+# is accepted: the enumeration may start at any carried-over item number.
+# Round-2 regression: the first version matched a bare "Items?" heading with
+# ALL delimiters optional, so the adjudicator's narration line "Item 4, the
+# Anthropic completion-window concern, ..." matched at position 0 and the
+# strip became a no-op - the whole chain-of-thought leaked into the PR
+# thread. Delimiters are now structural: a line must start with a per-item
+# CONFIRMED/UNRESOLVED or a numbered line to anchor the block.
+_FIXUP_NUMBERED = re.compile(r"(?im)^\s*\*{0,2}\d+[.:)]\s")
 
 
 def strip_fixup_narration(content: str) -> str:
     """Keep only the adjudication block of a fixup re-review output.
 
-    The block starts at the item enumeration (a 'Items:' heading, the first
-    per-item CONFIRMED/UNRESOLVED line, or the first numbered item). If no
-    block start is found, return the content unchanged (the per-item parser
-    scans the whole text, so an unstripped adjudication still parses)."""
+    The block starts at the first numbered item line or the first per-item
+    CONFIRMED/UNRESOLVED line - whichever comes first. If neither is found,
+    return the content unchanged (the per-item parser scans the whole text,
+    so an unstripped adjudication still parses)."""
     if not content:
         return content
     best = None
-    for pat in (_FIXUP_PER_ITEM, _FIXUP_ITEMS_HDR, _FIXUP_NUMBERED):
+    for pat in (_FIXUP_PER_ITEM, _FIXUP_NUMBERED):
         m = pat.search(content)
         if m:
             best = m.start() if best is None else min(best, m.start())

@@ -250,7 +250,9 @@ def test_strip_fixup_narration_item_heading():
         "FIXUP VERDICT: CONDITIONAL_PASS"
     )
     out = strip_fixup_narration(content)
-    assert out.startswith("**BLOCK items**"), out[:80]
+    # The block anchors at the first numbered item line (the bold heading
+    # above it is narration-adjacent and may carry no delimiter).
+    assert out.startswith("1. MatchesModel"), out[:80]
     assert "pin down" not in out
     assert "FIXUP VERDICT: CONDITIONAL_PASS" in out
 
@@ -326,3 +328,34 @@ def test_latest_block_comment_matches_fixup_still_blocked(monkeypatch, tmp_path)
     assert body.startswith("## Review Gate: Fixup re-review"), body[:80]
     assert "STILL_BLOCKED" in body
     assert err == ""
+
+
+def test_strip_fixup_narration_round2_regression():
+    """Round-2 regression (PR #138, 2026-09-12): the adjudicator's narration
+    began 'Item 4, the Anthropic completion-window concern, seems resolved...'
+    and the first strip version matched it at position 0 (all delimiters in
+    the items-heading pattern were optional), leaking the whole
+    chain-of-thought into the PR thread. The block must anchor at the
+    numbered item list / per-item lines, never at a mid-sentence 'Item N,'
+    narration line."""
+    from job_star.executors.review import strip_fixup_narration
+    content = (
+        "Item 4, the Anthropic completion-window concern, seems resolved since "
+        "the fixup makes the asymmetry explicit.\n\n"
+        "I'm second-guessing whether to treat the narration as authoritative...\n\n"
+        "3. Synthetic/default SLA advertised as authoritative; not flagged as "
+        "an estimate versus a provider-reported value.\n"
+        "4. Write-once batch-routing invariant only documented in prose, not "
+        "enforced in code.\n"
+        "CONFIRMED - item 3: batch_route.go adds SLAEstimated with json tag "
+        "sla_estimated, populated in Route(), default-true in batchroutes.go.\n"
+        "CONFIRMED - item 4: server.go WithBatchRouting returns early with a "
+        "log when s.batchRoutes != nil, and the test verifies it.\n"
+        "FIXUP VERDICT: CONDITIONAL_PASS"
+    )
+    out = strip_fixup_narration(content)
+    assert out.startswith("3. Synthetic/default SLA"), out[:80]
+    assert "second-guessing" not in out
+    assert "seems resolved" not in out
+    assert "CONFIRMED - item 3" in out
+    assert "FIXUP VERDICT: CONDITIONAL_PASS" in out
